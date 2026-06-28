@@ -1,0 +1,56 @@
+{
+  "manifest_version": 3,
+  "name": "Media Extractor PRO",
+  "version": "2.0",
+  "description": "Extract all video & audio streams from any website. Block ads. Inspect storage.",
+  "permissions": [
+    "declarativeNetRequest",
+    "webRequest",
+    "offscreen",
+    "tabs",
+    "cookies",
+    "storage",
+    "scripting",
+    "downloads"
+  ],
+  "host_permissions": [
+    "<all_urls>",
+    "http://127.0.0.1:8787/*",
+    "http://localhost:8787/*"
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Media Extractor PRO — download from this page"
+  },
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "ad_block_rules",
+        "enabled": true,
+        "path": "rules/ad-block-rules.json"
+      }
+    ]
+  },
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/media-scraper.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/page-extractor.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["content/page-extractor.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

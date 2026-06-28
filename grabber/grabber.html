@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Media Extractor — Grab everything</title>
+  <link rel="stylesheet" href="grabber.css">
+</head>
+<body>
+  <header>
+    <div class="brand"><span class="dot"></span> Media Extractor <span class="pro">PRO</span> — Page Grabber</div>
+    <div class="head-actions">
+      <span id="pageUrl" class="page-url"></span>
+      <button id="rescan" class="btn btn-ghost">⟳ Rescan</button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-cat="video">🎬 Video <span id="c-video" class="badge">0</span></button>
+    <button class="tab" data-cat="image">🖼 Images <span id="c-image" class="badge">0</span></button>
+    <button class="tab" data-cat="audio">🎵 Audio <span id="c-audio" class="badge">0</span></button>
+    <button class="tab" data-cat="doc">📄 Docs <span id="c-doc" class="badge">0</span></button>
+  </nav>
+
+  <div id="status" class="status">Scanning this page…</div>
+
+  <main>
+    <div class="bulk"><button id="dlAll" class="btn btn-primary">⬇ Download all in this tab</button></div>
+    <div id="grid" class="grid"></div>
+  </main>
+
+  <footer><span id="serverState" class="muted">checking backend…</span></footer>
+
+  <script src="grabber.js"></script>
+</body>
+</html>

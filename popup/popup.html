@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="head">
+    <div class="dot"></div>
+    <h1>Media Extractor <span class="pro">PRO</span></h1>
+  </div>
+
+  <div id="main">
+    <!-- Primary, always-works, no-server action -->
+    <button id="grabAll" class="btn btn-primary grab-primary">
+      🔎 Scan this page for ALL media
+      <span class="sub2">images · video · audio · docs — no setup needed</span>
+    </button>
+
+    <div id="badPage" class="bad-page hidden">Open a normal web page to scan it.</div>
+
+    <div class="divider"><span>optional: one-click video download</span></div>
+
+    <!-- Only shown when the optional local server is running -->
+    <div id="serverSection" class="hidden">
+      <div class="media">
+        <img id="thumb" class="thumb hidden" alt="">
+        <div class="meta">
+          <div id="title" class="title">Reading this page…</div>
+          <div id="sub" class="sub"></div>
+        </div>
+      </div>
+      <div id="presets" class="presets"></div>
+      <div id="progressWrap" class="progress-wrap hidden">
+        <div class="bar"><div id="bar" class="bar-fill"></div></div>
+        <div id="progressText" class="progress-text">Starting…</div>
+      </div>
+      <div id="status" class="status"></div>
+    </div>
+
+    <!-- Shown when the server is NOT running (non-alarming) -->
+    <div id="serverHint" class="server-hint hidden">
+      For one-click <b>YouTube / streaming</b> video, optionally run the local helper:
+      <code>python3 server/server.py</code>
+      <span class="hint-actions">
+        <button id="copyCmd" class="mini">Copy</button>
+        <button id="retry" class="mini">Recheck</button>
+      </span>
+    </div>
+
+    <!-- Backend Settings configuration panel -->
+    <div id="settingsPanel" class="settings-panel hidden">
+      <div class="settings-title">⚙ Backend Settings</div>
+      <div class="settings-desc">Enter your remote/local helper server URL:</div>
+      <div class="settings-row">
+        <input type="text" id="serverUrlInput" placeholder="http://127.0.0.1:8787" />
+        <button id="saveServerUrl" class="mini">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span id="serverState" class="server-state">checking…</span>
+    <span id="toggleSettings" class="muted" style="cursor: pointer; text-decoration: underline;">⚙ settings</span>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,97 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  width: 340px;
+  font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
+  background: #0f1115;
+  color: #e6e8ec;
+  font-size: 13px;
+}
+.hidden { display: none !important; }
+
+.head { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid #1d2128; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: #34d399; box-shadow: 0 0 8px #34d399; }
+.head h1 { font-size: 14px; font-weight: 600; }
+.pro { font-size: 9px; font-weight: 700; color: #0f1115; background: #fbbf24; padding: 1px 5px; border-radius: 4px; vertical-align: middle; }
+
+.media { display: flex; gap: 10px; padding: 14px; }
+.thumb { width: 96px; height: 54px; object-fit: cover; border-radius: 6px; flex-shrink: 0; background: #1d2128; }
+.meta { min-width: 0; }
+.title { font-weight: 600; line-height: 1.35; max-height: 3.5em; overflow: hidden; }
+.sub { color: #8b94a3; margin-top: 4px; font-size: 11px; }
+
+.presets { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 14px 8px; }
+.btn { border: none; border-radius: 7px; padding: 8px 12px; font-size: 12px; font-weight: 600; cursor: pointer; transition: .15s; }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn-primary { background: #6366f1; color: #fff; flex: 1 0 100%; }
+.btn-primary:hover:not(:disabled) { background: #4f46e5; }
+.btn-ghost { background: #1d2128; color: #cbd2dc; }
+.btn-ghost:hover:not(:disabled) { background: #262b34; }
+
+.grab-primary { display: flex; flex-direction: column; align-items: center; gap: 3px; width: calc(100% - 28px); margin: 14px; padding: 12px; font-size: 14px; }
+.grab-primary .sub2 { font-weight: 500; font-size: 10px; opacity: .85; }
+.bad-page { margin: -6px 14px 8px; font-size: 11px; color: #fbbf24; }
+
+.divider { display: flex; align-items: center; gap: 8px; margin: 4px 14px 10px; color: #5b636f; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+.divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: #1d2128; }
+
+.server-hint { margin: 0 14px 12px; padding: 10px; background: #14171d; border: 1px solid #1d2128; border-radius: 8px; font-size: 11px; color: #aeb6c2; line-height: 1.7; }
+.hint-actions { display: inline-flex; gap: 6px; margin-left: 4px; }
+
+.progress-wrap { padding: 6px 14px 12px; }
+.bar { height: 6px; background: #1d2128; border-radius: 4px; overflow: hidden; }
+.bar-fill { height: 100%; width: 2%; background: linear-gradient(90deg, #6366f1, #34d399); transition: width .3s; }
+.progress-text { font-size: 11px; color: #8b94a3; margin-top: 6px; }
+
+.status { padding: 0 14px 12px; font-size: 12px; min-height: 0; }
+.status.ok { color: #34d399; }
+.status.err { color: #f87171; }
+
+.offline { padding: 16px 14px; }
+.offline-title { color: #fbbf24; font-weight: 600; margin-bottom: 8px; }
+.offline-body { font-size: 12px; color: #aeb6c2; line-height: 1.7; }
+.offline-hint { color: #8b94a3; font-size: 11px; margin-top: 8px; }
+code { background: #1d2128; color: #93c5fd; padding: 2px 6px; border-radius: 4px; font-size: 11px; }
+.mini { background: #1d2128; color: #cbd2dc; border: none; border-radius: 4px; padding: 2px 8px; font-size: 11px; cursor: pointer; margin-left: 6px; }
+#retry { margin-top: 12px; }
+
+.foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 9px 14px; border-top: 1px solid #1d2128; font-size: 10px; }
+.server-state { color: #8b94a3; }
+.server-state.ok { color: #34d399; }
+.server-state.warn { color: #fbbf24; }
+.server-state.err { color: #f87171; }
+.muted { color: #5b636f; }
+
+.settings-panel {
+  margin: 10px 14px;
+  padding: 10px;
+  background: #14171d;
+  border: 1px solid #1d2128;
+  border-radius: 8px;
+}
+.settings-title {
+  font-weight: 600;
+  color: #fbbf24;
+  margin-bottom: 4px;
+}
+.settings-desc {
+  font-size: 11px;
+  color: #8b94a3;
+  margin-bottom: 8px;
+}
+.settings-row {
+  display: flex;
+  gap: 8px;
+}
+.settings-row input {
+  flex: 1;
+  background: #1d2128;
+  border: 1px solid #2d333f;
+  border-radius: 4px;
+  padding: 4px 8px;
+  color: #cbd2dc;
+  font-size: 11px;
+}
+.settings-row input:focus {
+  outline: none;
+  border-color: #6366f1;
+}
