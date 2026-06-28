@@ -23,7 +23,7 @@ function classifyResource(url, contentType = '') {
   return null;
 }
 
-function addSniffed(tabId, url, contentType) {
+function addSniffed(tabId, url, contentType, size = 0) {
   if (tabId < 0 || !/^https?:/i.test(url)) return;
   // Skip noisy YouTube segment spam (handled elsewhere) and tiny tracking pixels
   if (url.includes('googlevideo.com/videoplayback')) return;
@@ -35,6 +35,7 @@ function addSniffed(tabId, url, contentType) {
     url, type: c.type, kind: c.kind, source: 'network',
     isVideo: c.type === 'video', isAudio: c.type === 'audio',
     mimeType: contentType || '', quality: c.kind === 'hls' ? 'HLS' : c.kind === 'dash' ? 'DASH' : '',
+    size: size || 0,
   });
   chrome.runtime.sendMessage({ type: 'MEDIA_UPDATE', tabId, data: tabMediaStore[tabId] }).catch(() => {});
 }
@@ -42,14 +43,16 @@ function addSniffed(tabId, url, contentType) {
 chrome.webRequest.onHeadersReceived.addListener(
   (details) => {
     const ctHeader = (details.responseHeaders || []).find((h) => h.name.toLowerCase() === 'content-type');
-    addSniffed(details.tabId, details.url, ctHeader ? ctHeader.value : '');
+    const lenHeader = (details.responseHeaders || []).find((h) => h.name.toLowerCase() === 'content-length');
+    const size = lenHeader ? parseInt(lenHeader.value, 10) : 0;
+    addSniffed(details.tabId, details.url, ctHeader ? ctHeader.value : '', size);
   },
   { urls: ['<all_urls>'] },
   ['responseHeaders']
 );
 // Also catch by extension before response (for direct media links / redirects)
 chrome.webRequest.onBeforeRequest.addListener(
-  (details) => { addSniffed(details.tabId, details.url, ''); },
+  (details) => { addSniffed(details.tabId, details.url, '', 0); },
   { urls: ['<all_urls>'] }
 );
 

@@ -15,11 +15,38 @@
   </header>
 
   <nav class="tabs">
-    <button class="tab active" data-cat="video">🎬 Video <span id="c-video" class="badge">0</span></button>
+    <button class="tab active" data-cat="all">🌟 All <span id="c-all" class="badge">0</span></button>
+    <button class="tab" data-cat="video">🎬 Video <span id="c-video" class="badge">0</span></button>
     <button class="tab" data-cat="image">🖼 Images <span id="c-image" class="badge">0</span></button>
     <button class="tab" data-cat="audio">🎵 Audio <span id="c-audio" class="badge">0</span></button>
     <button class="tab" data-cat="doc">📄 Docs <span id="c-doc" class="badge">0</span></button>
   </nav>
+
+  <div class="controls-bar">
+    <div class="control-group">
+      <label for="filterType">Filter:</label>
+      <select id="filterType">
+        <option value="all">All Formats</option>
+      </select>
+    </div>
+    <div class="control-group">
+      <label for="sortBy">Sort By:</label>
+      <select id="sortBy">
+        <option value="default">Default</option>
+        <option value="name">Name</option>
+        <option value="size">Size</option>
+        <option value="type">Type/Extension</option>
+        <option value="buffer">Source (Buffered/Direct)</option>
+      </select>
+    </div>
+    <div class="control-group">
+      <label for="sortOrder">Order:</label>
+      <select id="sortOrder">
+        <option value="asc">Ascending</option>
+        <option value="desc">Descending</option>
+      </select>
+    </div>
+  </div>
 
   <div id="status" class="status">Scanning this page…</div>
 

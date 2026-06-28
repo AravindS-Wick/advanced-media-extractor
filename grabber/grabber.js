@@ -8,7 +8,7 @@ const tabId = parseInt(params.get('tabId'), 10);
 const pageUrlParam = params.get('url') || '';
 
 let items = [];
-let activeCat = 'video';
+let activeCat = 'all';
 const muxJobs = {}; // id -> { btn, setMsg } for in-browser HLS muxing
 
 // Progress/result from the offscreen HLS muxer
@@ -37,11 +37,15 @@ document.querySelectorAll('.tab').forEach((t) => {
     document.querySelectorAll('.tab').forEach((x) => x.classList.remove('active'));
     t.classList.add('active');
     activeCat = t.dataset.cat;
+    populateFilterDropdown();
     render();
   };
 });
 $('rescan').onclick = scan;
 $('dlAll').onclick = downloadAllInCat;
+$('filterType').onchange = render;
+$('sortBy').onchange = render;
+$('sortOrder').onchange = render;
 
 init();
 
@@ -61,6 +65,7 @@ function scan() {
     }
     items = resp.items || [];
     updateCounts();
+    populateFilterDropdown();
     const total = items.length;
     $('status').textContent = total ? `Found ${total} resource${total === 1 ? '' : 's'} on this page.` : 'No downloadable resources detected. Try playing the video, then Rescan.';
     render();
@@ -75,18 +80,90 @@ function catOf(it) {
 }
 
 function updateCounts() {
+  $('c-all').textContent = items.length;
   ['video', 'image', 'audio', 'doc'].forEach((c) => {
     $('c-' + c).textContent = items.filter((it) => catOf(it) === c).length;
   });
 }
 
+function populateFilterDropdown() {
+  const select = $('filterType');
+  const prevVal = select.value;
+  select.innerHTML = '<option value="all">All Formats</option>';
+  
+  const list = items.filter((it) => activeCat === 'all' || catOf(it) === activeCat);
+  const formats = new Set();
+  list.forEach(it => {
+    const f = it.kind === 'hls' ? 'm3u8' : it.kind === 'dash' ? 'mpd' : ext(it.url) || it.type;
+    if (f) formats.add(f.toLowerCase());
+  });
+  
+  [...formats].sort().forEach(f => {
+    const opt = document.createElement('option');
+    opt.value = f;
+    opt.textContent = f.toUpperCase();
+    select.appendChild(opt);
+  });
+  
+  if ([...select.options].some(o => o.value === prevVal)) {
+    select.value = prevVal;
+  } else {
+    select.value = 'all';
+  }
+}
+
 function render() {
   const grid = $('grid');
   grid.innerHTML = '';
-  const list = items.filter((it) => catOf(it) === activeCat);
-  $('dlAll').textContent = `⬇ Download all ${activeCat} (${list.length})`;
+  
+  let list = items.filter((it) => activeCat === 'all' || catOf(it) === activeCat);
+  
+  const filterVal = $('filterType').value;
+  if (filterVal !== 'all') {
+    list = list.filter(it => {
+      const f = it.kind === 'hls' ? 'm3u8' : it.kind === 'dash' ? 'mpd' : ext(it.url) || it.type;
+      return f.toLowerCase() === filterVal;
+    });
+  }
+  
+  const sortByVal = $('sortBy').value;
+  const sortOrderVal = $('sortOrder').value;
+  
+  if (sortByVal !== 'default') {
+    list.sort((a, b) => {
+      let valA, valB;
+      if (sortByVal === 'name') {
+        valA = fileName(a).toLowerCase();
+        valB = fileName(b).toLowerCase();
+        return valA.localeCompare(valB);
+      } else if (sortByVal === 'size') {
+        valA = a.size || 0;
+        valB = b.size || 0;
+        return valA - valB;
+      } else if (sortByVal === 'type') {
+        valA = (a.kind === 'hls' ? 'm3u8' : a.kind === 'dash' ? 'mpd' : ext(a.url) || a.type).toLowerCase();
+        valB = (b.kind === 'hls' ? 'm3u8' : b.kind === 'dash' ? 'mpd' : ext(b.url) || b.type).toLowerCase();
+        return valA.localeCompare(valB);
+      } else if (sortByVal === 'buffer') {
+        valA = (a.kind === 'hls' || a.kind === 'dash') ? 1 : 0;
+        valB = (b.kind === 'hls' || b.kind === 'dash') ? 1 : 0;
+        return valA - valB;
+      }
+      return 0;
+    });
+    
+    if (sortOrderVal === 'desc') {
+      list.reverse();
+    }
+  }
+  
+  $('dlAll').textContent = `⬇ Download all in this view (${list.length})`;
   $('dlAll').style.display = list.length ? '' : 'none';
-  if (!list.length) { grid.innerHTML = '<p class="empty">Nothing in this category.</p>'; return; }
+  
+  if (!list.length) {
+    grid.innerHTML = '<p class="empty">No matching resources found.</p>';
+    return;
+  }
   list.forEach((it) => grid.appendChild(card(it)));
 }
 
@@ -104,11 +181,15 @@ function card(it) {
   const preview = it.type === 'image'
     ? `<img class="thumb" src="${esc(downloadUrl)}" loading="lazy" referrerpolicy="no-referrer">`
     : `<div class="thumb icon">${it.type === 'audio' ? '🎵' : it.type === 'doc' ? '📄' : '🎬'}</div>`;
+  
+  const sizeText = it.size ? ` · ${fmtSize(it.size)}` : '';
+  const bufferLabel = (it.kind === 'hls' || it.kind === 'dash') ? ' · Buffered' : '';
+
   div.innerHTML = `
     ${preview}
     <div class="info">
       <div class="name" title="${esc(name)}">${esc(name)}</div>
-      <div class="sub"><span class="kbadge">${badge}</span><span class="src">${esc(it.source || 'page')}</span></div>
+      <div class="sub"><span class="kbadge">${badge}</span><span class="src">${esc(it.source || 'page')}${sizeText}${bufferLabel}</span></div>
       <div class="url" title="${esc(downloadUrl)}">${esc(downloadUrl)}</div>
     </div>
     <div class="row" style="flex-wrap: wrap; gap: 6px;">
@@ -196,12 +277,38 @@ async function downloadAllInCat() {
 function resetBtn(btn) { if (btn) { btn.disabled = false; btn.textContent = '⬇ Download'; } }
 function ext(u) { const m = (u.split('?')[0].match(/\.([a-z0-9]{2,5})$/i)); return m ? m[1].toLowerCase() : ''; }
 function fileName(it) {
+  if (it._filename) return it._filename;
+  let name = '';
   try {
     const base = decodeURIComponent(new URL(it.url).pathname.split('/').pop() || '');
-    if (base && /\.[a-z0-9]{2,5}$/i.test(base)) return base.slice(0, 180);
+    if (base && /\.[a-z0-9]{2,5}$/i.test(base)) {
+      name = base.slice(0, 180);
+    }
   } catch {}
-  const e = it.kind === 'hls' || it.kind === 'dash' ? 'mp4' : ext(it.url) || (it.type === 'image' ? 'jpg' : it.type === 'audio' ? 'mp3' : it.type === 'doc' ? 'pdf' : 'mp4');
-  return `media_${Date.now().toString().slice(-6)}.${e}`;
+  if (!name) {
+    const e = it.kind === 'hls' || it.kind === 'dash' ? 'mp4' : ext(it.url) || (it.type === 'image' ? 'jpg' : it.type === 'audio' ? 'mp3' : it.type === 'doc' ? 'pdf' : 'mp4');
+    const hash = Math.abs(hashString(it.url)).toString(36).slice(0, 6);
+    name = `media_${hash}.${e}`;
+  }
+  it._filename = name;
+  return name;
+}
+
+function hashString(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash << 5) - hash + str.charCodeAt(i);
+    hash |= 0;
+  }
+  return hash;
+}
+
+function fmtSize(bytes) {
+  if (!bytes) return '';
+  const k = 1024;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 

@@ -16,19 +16,12 @@ When clicked on any web page, the popup shows a quick action to launch the serve
 ![Popup UI](screenshots/popup_ui.png)
 
 ### 2. The Serverless Page Grabber
-The grabber scans the active page (including nested frames, scripts, and dynamic elements) to list all media resources. It includes automatic high-resolution upgrades for Wikimedia, Unsplash, and Pexels.
+The grabber scans the active page (including nested frames, scripts, and dynamic elements) to list all media resources. It starts in the **🌟 All** tab and allows you to dynamically filter formats (e.g. `MP4`, `M3U8`, `WEBP`) and sort items by Name, Size, Type, or Buffer source (Ascending/Descending).
 
 ![Grabber UI](screenshots/grabber_ui.png)
 
-### 3. Amazon India Product Verification
-The extension successfully extracts hidden product video files and high-res product photos from e-commerce sites like Amazon.
-
-![Amazon India Scan](screenshots/amazon_in.png)
-
-### 4. Flipkart E-Commerce Verification
-Extracts hundreds of lazy-loaded images, variant crops, and asset files from platforms like Flipkart.
-
-![Flipkart Scan](screenshots/flipkart_com.png)
+### 3. High-Resolution & Stream Sniffing
+The extension intercepts dynamic network requests and parses HLS variants directly inside your browser. It includes automatic high-resolution/original image cleaners for platforms like Unsplash, Pexels, and Wikimedia.
 
 ---
 
