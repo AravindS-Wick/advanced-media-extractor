@@ -23,6 +23,15 @@ The grabber scans the active page (including nested frames, scripts, and dynamic
 ### 3. High-Resolution & Stream Sniffing
 The extension intercepts dynamic network requests and parses HLS variants directly inside your browser. It includes automatic high-resolution/original image cleaners for platforms like Unsplash, Pexels, and Wikimedia.
 
+### 4. E-Commerce Asset Extraction (Amazon & Flipkart)
+The extension successfully extracts lazy-loaded product videos, description images, and variant assets from major e-commerce platforms.
+
+- **Amazon India Product Video & Images:**
+  ![Amazon India Scan](screenshots/amazon_in.png)
+
+- **Flipkart Product Image Scrape:**
+  ![Flipkart Scan](screenshots/flipkart_com.png)
+
 ---
 
 ## 🚀 How to Install the Extension
