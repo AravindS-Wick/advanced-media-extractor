@@ -1,90 +1,49 @@
-# Media Extractor PRO
+# ⚡ Media Extractor PRO (v3.0)
 
-Media Extractor PRO is a powerful, production-grade Chrome extension designed to extract, sniff, and download all types of media: **Images, Videos, Audios, and Documents** from any web page. 
-
-It runs in two flexible modes:
-1. **Serverless Mode (Default)**: Scrapes high-resolution images, captures direct video/audio files, sniffs HLS stream playlists, parses variants, and executes **multi-threaded parallel chunked downloads** completely inside your browser.
-2. **Helper Server Mode (Optional)**: Connects to a local or cloud-hosted Python backend powered by `yt-dlp` and `ffmpeg` to resolve and download signature-protected media from YouTube, Instagram, Dailymotion, Twitter, and ~1800 other sites.
+A high-performance Manifest V3 Chrome Extension and Python backend engine for sniffing, filtering, previewing, and archiving web media (HLS streams, MP4/MKV videos, audio, images, and documents).
 
 ---
 
-## 📷 Screenshots & What to Expect
+## 🌟 Key Features (v3.0)
 
-### 1. The Extension Popup
-When clicked on any web page, the popup shows a quick action to launch the serverless page grabber, or resolves one-click streaming downloads if a helper backend is connected.
-
-![Popup UI](screenshots/popup_ui.png)
-
-### 2. The Serverless Page Grabber
-The grabber scans the active page (including nested frames, scripts, and dynamic elements) to list all media resources. It starts in the **🌟 All** tab and allows you to dynamically filter formats (e.g. `MP4`, `M3U8`, `WEBP`) and sort items by Name, Size, Type, or Buffer source (Ascending/Descending).
-
-![Grabber UI](screenshots/grabber_ui.png)
-
-### 3. High-Resolution & Stream Sniffing
-The extension intercepts dynamic network requests and parses HLS variants directly inside your browser. It includes automatic high-resolution/original image cleaners for platforms like Unsplash, Pexels, and Wikimedia.
-
-### 4. E-Commerce Asset Extraction (Amazon & Flipkart)
-The extension successfully extracts lazy-loaded product videos, description images, and variant assets from major e-commerce platforms.
-
-- **Amazon India Product Video & Images:**
-  ![Amazon India Scan](screenshots/amazon_in.png)
-
-- **Flipkart Product Image Scrape:**
-  ![Flipkart Scan](screenshots/flipkart_com.png)
+- **🎬 Real-Time HLS Download Engine**: Live percentage progress tracking (`Fetching 45%...` -> `✓ Saved`) directly inside popup & grabber pages.
+- **📐 Resolution Variant Expansion**: Automatically parses HLS master playlists into individual resolution cards (`1080p`, `1280p`, `720p`, `848p`, `640p`, `480p`, `360p`).
+- **📊 Multi-Source Video Size Calculator**: Calculates exact file sizes using a 6-stage video duration harvester (HTML5 video, OpenGraph metadata, ISO 8601 strings, JSON-LD, Dailymotion config) and resolution bitrates.
+- **📦 Client-Side ZIP Bulk Archiving**: Package multiple selected media files into a single zero-dependency Store-mode `.zip` file.
+- **🏷️ Smart Metadata Naming**: Auto-extracts titles from page context, video titles, or image alt tags, with inline click-to-edit renaming.
+- **🔎 Inbuilt Video Preview & Search**: Embedded video player modal for stream validation and live keyword searching.
+- **🛡️ Ad & Tracker Shield**: Built-in `declarativeNetRequest` ad blocker with dynamic cosmetic element hiding and persistent toggle synchronization.
+- **🔔 Extension Toolbar Badge**: Displays live detected media count badges on the browser action icon overlay and top popup header.
 
 ---
 
-## 🚀 How to Install the Extension
+## 🧪 Testing & Quality Assurance
 
-1. Download or clone this repository.
-2. Open Google Chrome and navigate to `chrome://extensions/`.
-3. Enable **Developer mode** using the toggle switch in the top-right corner.
-4. Click **Load unpacked** in the top-left corner.
-5. Select the `advanced-media-extractor` folder. The extension icon will now appear in your toolbar.
+### Run Jest Unit Tests
+```bash
+npm test
+```
 
----
+### Run Playwright E2E Suite
+```bash
+npm run test:e2e
+```
 
-## 📖 How to Use
-
-### Mode A: Serverless Mode (Zero Setup)
-1. Navigate to any web page (e.g. news sites, blogs, media portals, arXiv).
-2. Click the extension toolbar icon.
-3. Click **🔎 Scan this page for ALL media**.
-4. A full dashboard tab will open listing all found assets:
-   - **HLS Streams**: Click the dropdown next to any `.m3u8` stream to parse available resolutions and download.
-   - **Direct Video / Audio / Docs**: Downloads automatically run through our **parallel chunked downloader** (4-thread concurrency utilizing HTTP `Range` headers) with real-time progress feedback.
-
-### Mode B: Helper Server Mode (YouTube / Instagram / Protected Streams)
-Because platforms like YouTube, Instagram, Dailymotion, and Twitter serve videos in fragmented segments with dynamic signature ciphers, browser extensions cannot scrape or merge them directly on the frontend. 
-
-For these platforms, you connect the extension to a helper server:
-
-#### Option 1: Run it Locally
-1. Install requirements (system-wide):
-   ```bash
-   brew install yt-dlp ffmpeg   # macOS
-   # or on Windows/Linux using your package manager
-   ```
-2. Start the helper server:
-   ```bash
-   python3 server/server.py
-   ```
-3. Open the extension popup, click **⚙ settings** at the bottom, make sure it is pointing to `http://127.0.0.1:8787`, and click **Save**.
-
-#### Option 2: Deploy to the Cloud (Railway)
-If you cannot run python locally, you can host the backend in the cloud:
-1. Log in to [Railway](https://railway.app) and create a **New Project** -> **Deploy from GitHub**.
-2. Select your cloned repository.
-3. Set the **Root Directory** settings to `server`.
-4. Railway will build the app using the provided `Dockerfile` (which automatically installs Python, `ffmpeg`, and `yt-dlp`).
-5. Copy your public domain (e.g. `https://your-extractor-backend.up.railway.app`).
-6. In the extension popup, click **⚙ settings**, paste your Railway URL, and click **Save**.
-7. The extension will now process downloads on your remote server and stream the completed files directly to your local browser!
+### Validate JSON Rulesets
+```bash
+python -c "import json; json.load(open('manifest.json')); json.load(open('rules/ad-block-rules.json'))"
+```
 
 ---
 
-## ⚠️ Important Precautions & Constraints
+## ☁️ Backend Cloud Deployment
 
-*   **YouTube, Instagram, Twitter & Protected Streams**: These sites **will not work** in serverless mode. You *must* run or connect the Helper Server (`yt-dlp` backend) to resolve and download them.
-*   **Buffered/Dynamic Sites (like Dailymotion)**: In serverless mode, the stream links are sniffed on the fly. You must start playing or load the video player on the page for the browser to trigger the stream requests, allowing the extension's network listener to capture them.
-*   **DRM (Digital Rights Management)**: The extension **cannot** download media from DRM-protected platforms like Netflix, Spotify, Prime Video, or Disney+. These streams are hardware-encrypted, and decryption is technically impossible.
+The python helper engine supports dynamic `$PORT` binding and API Key security for 1-click cloud deployment:
+
+- **Render**: `render.yaml` blueprint included.
+- **Railway**: `railway.json` blueprint included.
+
+---
+
+## 📄 License
+MIT License. Created by [AravindS-Wick](https://github.com/AravindS-Wick).
