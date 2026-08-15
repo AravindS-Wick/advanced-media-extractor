@@ -131,3 +131,55 @@ if (document.readyState === 'complete') {
 } else {
   window.addEventListener('load', scrapeDOM);
 }
+
+// Monitor SPA URL changes (Single Page App navigation)
+let lastLocationUrl = location.href;
+setInterval(() => {
+  if (location.href !== lastLocationUrl) {
+    lastLocationUrl = location.href;
+    try {
+      if (chrome.runtime && chrome.runtime.id) {
+        chrome.runtime.sendMessage({ type: 'CLEAR_TAB_MEDIA' });
+        setTimeout(scrapeDOM, 1000);
+      }
+    } catch (_) {}
+  }
+}, 1000);
+
+// Dynamic Cosmetic Ad Blocker Styles Management
+const COSMETIC_ADBLOCK_CSS = `
+[id*="google_ads"],[id*="gpt-ad"],[class*="ad-box"],[class*="ad-container"],[class*="ad-banner"],[class*="ad-unit"],[class*="ad-wrapper"],[class*="ad-slot"],.sponsored-post,.sponsored-content,.trc_rbox_outer,.outbrain-template,.taboola,.criteo-ad,.ad-header,.ad-footer,div[id^="ad_"],div[class^="ad_"],iframe[src*="doubleclick.net"],iframe[src*="googlesyndication.com"],iframe[src*="adservice"],iframe[src*="adsystem"],.dm-player-ad,.dm-ad-companion,[class*="dm-ad-"],div[id*="dailymotion-ad"],#player-ads,.ytp-ad-module,.ytp-ad-overlay-container,.ytp-ad-text,ytd-promoted-sparkles-web-renderer,ytd-promoted-video-renderer,ytd-display-ad-renderer,ytd-banner-promo-renderer,ytd-statement-banner-renderer,ytd-in-feed-ad-layout-renderer {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+`;
+
+function updateCosmeticAdBlock(enabled) {
+  let styleEl = document.getElementById('media-extractor-cosmetic-adblock');
+  if (enabled) {
+    if (!styleEl) {
+      styleEl = document.createElement('style');
+      styleEl.id = 'media-extractor-cosmetic-adblock';
+      styleEl.textContent = COSMETIC_ADBLOCK_CSS;
+      (document.head || document.documentElement).appendChild(styleEl);
+    }
+  } else {
+    if (styleEl) {
+      styleEl.remove();
+    }
+  }
+}
+
+try {
+  chrome.storage.local.get(['adBlockEnabled'], (res) => {
+    const enabled = typeof res.adBlockEnabled === 'boolean' ? res.adBlockEnabled : true;
+    updateCosmeticAdBlock(enabled);
+  });
+
+  chrome.storage.onChanged.addListener((changes) => {
+    if (changes.adBlockEnabled) {
+      updateCosmeticAdBlock(changes.adBlockEnabled.newValue);
+    }
+  });
+} catch (_) {}

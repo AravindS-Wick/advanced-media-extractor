@@ -23,10 +23,29 @@ function classifyResource(url, contentType = '') {
   return null;
 }
 
+function updateTabBadge(tabId) {
+  if (!tabId || tabId < 0) return;
+  try {
+    const store = tabMediaStore[tabId];
+    if (!store || !store.streams) {
+      chrome.action.setBadgeText({ tabId, text: '' });
+      return;
+    }
+    const cleanStreams = store.streams.filter(it => !/\.m4s(\?|#|$)/i.test(it.url) && !/\/frag\(\d+\)/i.test(it.url));
+    const count = cleanStreams.length;
+    if (count > 0) {
+      chrome.action.setBadgeText({ tabId, text: count > 99 ? '99+' : String(count) });
+      chrome.action.setBadgeBackgroundColor({ tabId, color: '#4f46e5' });
+    } else {
+      chrome.action.setBadgeText({ tabId, text: '' });
+    }
+  } catch (_) {}
+}
+
 function addSniffed(tabId, url, contentType, size = 0) {
   if (tabId < 0 || !/^https?:/i.test(url)) return;
-  // Skip noisy YouTube segment spam (handled elsewhere) and tiny tracking pixels
-  if (url.includes('googlevideo.com/videoplayback')) return;
+  // Skip noisy segment spam (.m4s, fragment chunks, googlevideo)
+  if (url.includes('googlevideo.com/videoplayback') || /\.m4s(\?|#|$)/i.test(url) || /\/frag\(\d+\)/i.test(url)) return;
   const c = classifyResource(url, contentType);
   if (!c) return;
   if (!tabMediaStore[tabId]) tabMediaStore[tabId] = { streams: [], title: '', url: '' };
@@ -37,6 +56,7 @@ function addSniffed(tabId, url, contentType, size = 0) {
     mimeType: contentType || '', quality: c.kind === 'hls' ? 'HLS' : c.kind === 'dash' ? 'DASH' : '',
     size: size || 0,
   });
+  updateTabBadge(tabId);
   chrome.runtime.sendMessage({ type: 'MEDIA_UPDATE', tabId, data: tabMediaStore[tabId] }).catch(() => {});
 }
 
@@ -60,19 +80,48 @@ chrome.webRequest.onBeforeRequest.addListener(
 function collectPageResources() {
   const out = [];
   const seen = new Set();
+
+  let pageVideoDuration = 0;
+  try {
+    const vEl = document.querySelector('video');
+    if (vEl && vEl.duration && !isNaN(vEl.duration) && isFinite(vEl.duration)) {
+      pageVideoDuration = Math.round(vEl.duration);
+    }
+  } catch (_) {}
+
   const push = (raw, type, kind = 'file') => {
     if (!raw) return;
     let url;
     try { url = new URL(raw, location.href).href; } catch { return; }
-    if (!/^https?:/i.test(url) || seen.has(url)) return;
+    if (!/^https?:/i.test(url)) return;
+
+    // Dailymotion image resolution upgrade (/x160, /x240, /x360, /x480 -> /x1080)
+    if (type === 'image' && url.includes('dmcdn.net/v/')) {
+      url = url.replace(/\/x(160|240|360|480|720)(\?|$)/, '/x1080$2');
+    }
+
+    if (seen.has(url)) return;
     seen.add(url);
-    out.push({ url, type, kind, source: 'dom', isVideo: type === 'video', isAudio: type === 'audio' });
+    out.push({
+      url,
+      type,
+      kind,
+      source: 'dom',
+      isVideo: type === 'video',
+      isAudio: type === 'audio',
+      duration: (type === 'video' || kind === 'hls' || kind === 'dash') ? pageVideoDuration : 0
+    });
   };
 
-  // Images
+  // Images & Picture sources
   document.querySelectorAll('img').forEach((img) => {
     push(img.currentSrc || img.src, 'image');
     if (img.srcset) img.srcset.split(',').forEach((s) => push(s.trim().split(/\s+/)[0], 'image'));
+    // Lazy loaded image attributes
+    ['data-src', 'data-srcset', 'data-original', 'data-lazy', 'data-lazy-src', 'data-poster', 'data-thumb'].forEach(attr => {
+      const val = img.getAttribute(attr);
+      if (val) push(val.trim().split(/\s+/)[0], 'image');
+    });
   });
   document.querySelectorAll('picture source[srcset]').forEach((s) =>
     s.srcset.split(',').forEach((x) => push(x.trim().split(/\s+/)[0], 'image')));
@@ -87,6 +136,19 @@ function collectPageResources() {
   document.querySelectorAll('audio').forEach((a) => {
     push(a.currentSrc || a.src, 'audio');
     a.querySelectorAll('source').forEach((s) => push(s.src, 'audio'));
+  });
+
+  // Background images (CSS style attribute and computed styles on media components)
+  document.querySelectorAll('[style*="background"], [class*="thumb"], [class*="card"], [class*="poster"], [class*="img"], [class*="media"], [class*="video"]').forEach((el) => {
+    const styleAttr = el.getAttribute('style') || '';
+    const bgMatch = styleAttr.match(/url\(['"]?([^'"()]+)['"]?\)/i);
+    if (bgMatch) push(bgMatch[1], 'image');
+
+    // Check data attributes
+    ['data-src', 'data-bg', 'data-background', 'data-thumbnail', 'data-poster', 'data-image'].forEach(attr => {
+      const val = el.getAttribute(attr);
+      if (val) push(val, 'image');
+    });
   });
 
   // Anchor links to files
@@ -177,6 +239,66 @@ async function ensureOffscreen() {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Ad Blocker status & toggle
+  if (message.type === 'GET_ADBLOCK_STATUS') {
+    chrome.storage.local.get(['adBlockEnabled'], (res) => {
+      const enabled = typeof res.adBlockEnabled === 'boolean' ? res.adBlockEnabled : true;
+      sendResponse({ enabled });
+    });
+    return true;
+  }
+  if (message.type === 'TOGGLE_ADBLOCK') {
+    const enable = !!message.enable;
+    chrome.storage.local.set({ adBlockEnabled: enable }, () => {
+      chrome.declarativeNetRequest.updateEnabledRulesets({
+        enableRulesetIds: enable ? ['ad_block_rules'] : [],
+        disableRulesetIds: enable ? [] : ['ad_block_rules']
+      }).then(() => {
+        sendResponse({ ok: true, enabled: enable });
+      }).catch(err => {
+        sendResponse({ ok: false, error: err.message });
+      });
+    });
+    return true;
+  }
+  // Clear stored tab media
+  if (message.type === 'CLEAR_TAB_MEDIA') {
+    const tabId = message.tabId;
+    if (tabId && tabMediaStore[tabId]) {
+      tabMediaStore[tabId] = { streams: [], title: '', url: '' };
+    }
+    updateTabBadge(tabId);
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  // Fetch missing size via HEAD request
+  if (message.type === 'FETCH_SIZE' && message.url) {
+    fetch(message.url, { method: 'HEAD' })
+      .then(res => {
+        const len = res.headers.get('content-length');
+        const size = len ? parseInt(len, 10) : 0;
+        sendResponse({ ok: true, size });
+      })
+      .catch(() => sendResponse({ ok: false, size: 0 }));
+    return true;
+  }
+
+  // Fetch ArrayBuffer for client-side ZIP packaging
+  if (message.type === 'FETCH_BLOB_ARRAY' && message.url) {
+    fetch(message.url)
+      .then(res => {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.arrayBuffer();
+      })
+      .then(buf => {
+        const bytes = Array.from(new Uint8Array(buf));
+        sendResponse({ ok: true, bytes });
+      })
+      .catch(err => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
   // Offscreen finished assembling -> SW saves the blob URL (offscreen lacks chrome.downloads).
   if (message.type === 'OFFSCREEN_DOWNLOAD') {
     chrome.downloads.download({ url: message.url, filename: message.filename, saveAs: false }, (downloadId) => {
@@ -247,6 +369,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const existingUrls = new Set(tabMediaStore[tabId].streams.map(s => s.url));
     const newStreams = (payload.streams || []).filter(s => s.url && !existingUrls.has(s.url));
     tabMediaStore[tabId].streams.push(...newStreams);
+
+    updateTabBadge(tabId);
 
     // Notify any open DevTools panel for this tab (fire-and-forget)
     chrome.runtime.sendMessage({
@@ -556,4 +680,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   delete tabMediaStore[tabId];
 });
+
+// Auto-reset media store when tab navigates to a new URL
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === 'loading' || changeInfo.url) {
+    if (tabMediaStore[tabId]) {
+      tabMediaStore[tabId] = { streams: [], title: tab?.title || '', url: changeInfo.url || tab?.url || '' };
+      updateTabBadge(tabId);
+    }
+  }
+});
+
+// Enforce stored Ad Blocker preference across extension reloads, browser restarts, and SW startup
+function syncAdBlockRuleset() {
+  chrome.storage.local.get(['adBlockEnabled'], (res) => {
+    const enabled = typeof res.adBlockEnabled === 'boolean' ? res.adBlockEnabled : true;
+    if (typeof res.adBlockEnabled !== 'boolean') {
+      chrome.storage.local.set({ adBlockEnabled: true });
+    }
+    chrome.declarativeNetRequest.updateEnabledRulesets({
+      enableRulesetIds: enabled ? ['ad_block_rules'] : [],
+      disableRulesetIds: enabled ? [] : ['ad_block_rules']
+    }).catch(() => {});
+  });
+}
+
+chrome.runtime.onInstalled.addListener(syncAdBlockRuleset);
+chrome.runtime.onStartup.addListener(syncAdBlockRuleset);
+syncAdBlockRuleset();
 
