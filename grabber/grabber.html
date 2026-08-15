@@ -2,14 +2,16 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Media Extractor — Grab everything</title>
+  <title>Media Extractor PRO — Page Grabber</title>
   <link rel="stylesheet" href="grabber.css">
+  <script src="../lib/zip-builder.js"></script>
 </head>
 <body>
   <header>
     <div class="brand"><span class="dot"></span> Media Extractor <span class="pro">PRO</span> — Page Grabber</div>
     <div class="head-actions">
       <span id="pageUrl" class="page-url"></span>
+      <button id="clearList" class="btn btn-ghost text-danger">🧹 Clear</button>
       <button id="rescan" class="btn btn-ghost">⟳ Rescan</button>
     </div>
   </header>
@@ -23,6 +25,9 @@
   </nav>
 
   <div class="controls-bar">
+    <div class="control-group search-group" style="flex: 1; max-width: 300px;">
+      <input type="text" id="searchInput" class="search-input" placeholder="🔍 Search by name, resolution or format..." />
+    </div>
     <div class="control-group">
       <label for="filterType">Filter:</label>
       <select id="filterType">
@@ -36,7 +41,6 @@
         <option value="name">Name</option>
         <option value="size">Size</option>
         <option value="type">Type/Extension</option>
-        <option value="buffer">Source (Buffered/Direct)</option>
       </select>
     </div>
     <div class="control-group">
@@ -51,11 +55,43 @@
   <div id="status" class="status">Scanning this page…</div>
 
   <main>
-    <div class="bulk"><button id="dlAll" class="btn btn-primary">⬇ Download all in this tab</button></div>
+    <div class="bulk"><button id="dlAll" class="btn btn-primary">⬇ Download all in this view</button></div>
     <div id="grid" class="grid"></div>
   </main>
 
-  <footer><span id="serverState" class="muted">checking backend…</span></footer>
+  <!-- Bulk Download Modal -->
+  <div id="bulkModal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <h3 class="modal-title">📦 Bulk Download Options</h3>
+      <p class="modal-desc">How would you like to download <span id="bulkCount">0</span> selected media files?</p>
+      <div class="modal-options">
+        <button id="dlZipBtn" class="btn-modal btn-primary">
+          📦 Download as ZIP Archive
+          <span class="btn-sub">Combines all files into 1 single .zip file (Recommended)</span>
+        </button>
+        <button id="dlIndivBtn" class="btn-modal btn-secondary">
+          📁 Download as Individual Files
+          <span class="btn-sub">Saves each file separately into Downloads folder</span>
+        </button>
+      </div>
+      <button id="cancelModalBtn" class="mini-btn mt-2">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Video Preview Player Modal -->
+  <div id="videoModal" class="modal-overlay hidden">
+    <div class="video-modal-card">
+      <div class="video-modal-header">
+        <span id="videoTitle" class="video-modal-title">Media Preview</span>
+        <button id="closeVideoBtn" class="mini-btn text-danger">✕ Close</button>
+      </div>
+      <div class="video-wrapper">
+        <video id="previewPlayer" controls autoplay></video>
+      </div>
+    </div>
+  </div>
+
+  <footer><span id="serverState" class="muted">in-browser mode</span></footer>
 
   <script src="grabber.js"></script>
 </body>
