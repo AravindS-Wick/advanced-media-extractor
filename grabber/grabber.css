@@ -1,4 +1,21 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* Custom Sleek Dark Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #0d0f13;
+}
+::-webkit-scrollbar-thumb {
+  background: #1d2128;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #6366f1;
+}
+
 body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; background: #0d0f13; color: #e6e8ec; font-size: 13px; }
 
 header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 18px; border-bottom: 1px solid #1d2128; position: sticky; top: 0; background: #0d0f13; z-index: 5; }
@@ -18,14 +35,19 @@ header { display: flex; align-items: center; justify-content: space-between; gap
 main { padding-bottom: 60px; }
 
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; padding: 0 18px; }
-.card { background: #14171d; border: 1px solid #1d2128; border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
-.thumb { width: 100%; height: 120px; object-fit: cover; border-radius: 7px; background: #0d0f13; }
+.card { background: #14171d; border: 1px solid #1d2128; border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; transition: border-color 0.15s ease; }
+.card:hover { border-color: #2e3542; }
+.thumb { width: 100%; height: 120px; object-fit: cover; border-radius: 7px; background: #0d0f13; border: 1px solid #1d2128; }
 .thumb.icon { display: flex; align-items: center; justify-content: center; font-size: 40px; }
 .info { min-width: 0; }
-.name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.name:hover { color: #818cf8; text-decoration: underline; }
+.res-name-input { background: #1d2128; border: 1px solid #6366f1; color: #fff; font-size: 12px; padding: 2px 4px; border-radius: 4px; width: 100%; }
+
 .sub { display: flex; gap: 8px; align-items: center; margin: 4px 0; }
 .kbadge { background: #312e81; color: #c7d2fe; border-radius: 4px; padding: 1px 6px; font-size: 10px; font-weight: 700; }
 .src { color: #5b636f; font-size: 10px; }
+.res-size { color: #34d399; font-size: 10px; }
 .url { color: #4b5563; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row { display: flex; gap: 6px; }
 .cstatus { font-size: 11px; min-height: 14px; }
@@ -38,6 +60,7 @@ main { padding-bottom: 60px; }
 .btn-primary:hover:not(:disabled) { background: #4f46e5; }
 .btn-ghost { background: #1d2128; color: #cbd2dc; }
 .btn-ghost:hover:not(:disabled) { background: #262b34; }
+.text-danger { color: #f87171 !important; }
 
 footer { position: fixed; bottom: 0; left: 0; right: 0; padding: 9px 18px; background: #0d0f13; border-top: 1px solid #1d2128; font-size: 11px; }
 .muted { color: #5b636f; } .ok { color: #34d399; } .warn { color: #fbbf24; }
@@ -73,3 +96,71 @@ footer { position: fixed; bottom: 0; left: 0; right: 0; padding: 9px 18px; backg
 .control-group select:focus {
   border-color: #6366f1;
 }
+
+/* Modal Overlay */
+.modal-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 16px;
+}
+
+.modal-card {
+  background: #141720;
+  border: 1px solid #2a3040;
+  border-radius: 10px;
+  padding: 20px;
+  width: 100%;
+  max-width: 400px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+}
+
+.modal-title {
+  font-size: 15px;
+  color: #fff;
+  margin-bottom: 6px;
+}
+
+.modal-desc {
+  font-size: 12px;
+  color: #8b94a3;
+  margin-bottom: 14px;
+}
+
+.modal-options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.btn-modal {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border-radius: 8px;
+  text-align: left;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid #262b36;
+}
+
+.btn-modal .btn-sub {
+  font-size: 11px;
+  font-weight: 400;
+  color: #8b94a3;
+  margin-top: 3px;
+}
+
+.btn-secondary {
+  background: #1d2128;
+  color: #e6e8ec;
+}
+
+.hidden { display: none !important; }

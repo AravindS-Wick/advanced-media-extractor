@@ -26,7 +26,7 @@
     "rule_resources": [
       {
         "id": "ad_block_rules",
-        "enabled": true,
+        "enabled": false,
         "path": "rules/ad-block-rules.json"
       }
     ]
@@ -49,7 +49,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["content/page-extractor.js"],
+      "resources": ["content/page-extractor.js", "lib/zip-builder.js"],
       "matches": ["<all_urls>"]
     }
   ]

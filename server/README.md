@@ -1,60 +1,83 @@
-# Media Extractor PRO — local backend
+# Media Extractor PRO — Helper Server & Cloud Hosting Guide
 
-The extension popup is a thin client. The actual downloading is done by this small local
-server, which shells out to **yt-dlp** (+ **ffmpeg**) — the universal engine that supports
-~1800 sites (YouTube, Dailymotion, X, Instagram, generic HLS/DASH, …), cracks signature
-ciphers, and muxes audio+video. A browser extension cannot do these things on its own.
+The Chrome Extension operates in two modes:
+1. **In-Browser Serverless Mode**: Scans page DOM & sniffed network streams, downloads direct files & images (bypassing CORS), and assembles HLS video streams right in your browser via offscreen document.
+2. **Python Engine Mode (`yt-dlp` + `ffmpeg`)**: Universal engine supporting ~1800 sites (YouTube, Dailymotion, X, Instagram, TikTok, etc.) with resolution selection (4K, 1080p, 720p, MP3 Audio).
 
-## One-time setup
+---
 
+## 🚀 Local Run (Zero Configuration)
+
+### 1. Install prerequisites (macOS / Linux / Windows WSL):
 ```bash
-brew install yt-dlp ffmpeg        # the engine + muxer
+# macOS
+brew install yt-dlp ffmpeg
+
+# Windows (winget / scoop / pip)
+pip install yt-dlp
+# Install ffmpeg and ensure it is in PATH
 ```
 
-## Run it
-
+### 2. Start local server:
 ```bash
-cd advanced-media-extractor
-python3 server/server.py          # listens on http://127.0.0.1:8787
+python3 server/server.py
+```
+Listens on `http://127.0.0.1:8787`.
+
+---
+
+## 🌐 Remote Cloud Hosting Guide
+
+If you don't want to run the server locally on your machine, you can host it remotely on **Render**, **Railway**, **Docker**, or any **VPS (Ubuntu / Debian / DigitalOcean)**.
+
+### Option A: Render.com (Free Tier Ready)
+1. Push this repo to your GitHub account.
+2. Log into [Render.com](https://render.com) -> New **Web Service** -> Connect your GitHub repo.
+3. Render automatically reads `server/render.yaml` and `server/Dockerfile`.
+4. (Optional) Set `API_KEY` in Environment Variables to secure your hosted endpoint.
+5. Copy your service URL (e.g. `https://media-extractor-xyz.onrender.com`).
+6. In the Chrome Extension popup -> **⚙ Settings** -> Paste your URL (and API Key if set) -> Click **Save Settings**.
+
+### Option B: Railway.app (1-Click Deployment)
+1. Log into [Railway.app](https://railway.app) -> **New Project** -> **Deploy from GitHub repo**.
+2. Set Root Directory to `server/`.
+3. Railway will build the container using `server/Dockerfile`.
+4. Copy your generated public domain (e.g., `https://web-production-1234.up.railway.app`).
+5. Open Chrome Extension popup -> **⚙ Settings** -> Paste URL -> **Save Settings**.
+
+### Option C: Docker (Self-Hosted VPS / Unraid / Synology)
+```bash
+# Build Docker image
+docker build -t media-extractor-server -f server/Dockerfile .
+
+# Run container with optional API key protection
+docker run -d \
+  -p 8787:8787 \
+  -e PORT=8787 \
+  -e API_KEY="your_secret_api_key" \
+  --name media-extractor \
+  media-extractor-server
 ```
 
-Leave it running while you use the extension. Click the toolbar icon on any page, pick a
-quality, and the file lands in your `~/Downloads`.
+---
 
-To keep it always-on, run it under a process manager or a macOS LaunchAgent (optional).
+## 🔐 API Security & Options
 
-## What works / what doesn't
+| Environment Variable | Default | Purpose |
+|----------------------|---------|---------|
+| `PORT` | `8787` | Port the HTTP server binds to |
+| `API_KEY` | None | Optional secret token required for authentication (`X-API-Key` header) |
 
-- ✅ Any of yt-dlp's ~1800 supported sites + its generic extractor for unknown HLS/DASH pages.
-- ❌ **DRM-protected** services (Netflix, Disney+, Spotify, Prime, …). Hardware-encrypted —
-  impossible for any tool. Not a bug.
-- 🔄 If a big site suddenly breaks, run `brew upgrade yt-dlp` (sites change their internals).
+---
 
-## Cloud Deployment (Railway / Render)
+## 🛠 API Endpoints
 
-If you don't want to run the python server locally, you can deploy it to the cloud using the included `Dockerfile`. 
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Server status, ffmpeg, yt-dlp check, and auth requirements |
+| GET | `/resolve?url=…` | Extract video metadata, title, thumbnail, available resolutions |
+| POST | `/download` | Trigger download job (`preset`: `best`, `1080`, `720`, `480`, `audio`) |
+| GET | `/progress?id=…` | Poll progress percent, status (`running`, `done`, `error`), and filename |
+| GET | `/files?id=…` | Download finished file stream from remote host |
 
-### Steps to Deploy on Railway:
-1. Push this repository to GitHub.
-2. Log in to [Railway](https://railway.app) and create a **New Project** -> **Deploy from GitHub**.
-3. Choose your repository. In the settings, set the **Root Directory** to `server`.
-4. Railway will automatically build and deploy the container using the `Dockerfile` (which provisions `python`, `ffmpeg`, and the latest `yt-dlp`).
-5. Copy your generated public domain (e.g. `https://your-service-name.up.railway.app`).
-
-### Connect the Chrome Extension:
-1. Open the Media Extractor PRO extension popup.
-2. Click **⚙ settings** in the bottom right footer.
-3. Paste your public Railway URL (e.g. `https://your-service-name.up.railway.app`) into the input field and click **Save**.
-4. The extension will automatically verify the remote service. When you click download, the remote server processes the video and automatically prompts your browser to download the finished file!
-
-## API (used by the popup)
-
-| Method | Path | Returns |
-|--------|------|---------|
-| GET  | `/health` | `{ ok, ytdlp, ffmpeg, downloadDir }` |
-| GET  | `/resolve?url=…` | `{ title, duration, thumbnail, extractor, heights[], hasVideo, hasAudio }` |
-| POST | `/download` `{url, preset}` | `{ job_id }` — preset: `best`/`1080`/`720`/`480`/`audio` |
-| GET  | `/progress?id=…` | `{ status, percent, file, error }` |
-| GET  | `/files?id=…` | File download stream |
-
-> You alone are responsible for respecting each site's terms of service and copyright.
+> Respect site terms of service and content copyright when using this tool.

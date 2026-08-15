@@ -2,67 +2,214 @@
 <html>
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Media Extractor PRO</title>
   <link rel="stylesheet" href="popup.css">
+  <script src="../lib/zip-builder.js"></script>
 </head>
 <body>
-  <div class="head">
-    <div class="dot"></div>
-    <h1>Media Extractor <span class="pro">PRO</span></h1>
-  </div>
+  <!-- Extension Header -->
+  <header class="app-header">
+    <div class="brand">
+      <div class="dot pulse"></div>
+      <h1 class="logo-text">Media Extractor <span class="badge-pro">PRO</span></h1>
+      <span id="headerCountBadge" class="header-count-badge">0 Found</span>
+    </div>
+    <div class="header-actions">
+      <button id="popoutBtn" class="icon-btn" title="Open full tab view">↗</button>
+    </div>
+  </header>
 
-  <div id="main">
-    <!-- Primary, always-works, no-server action -->
-    <button id="grabAll" class="btn btn-primary grab-primary">
-      🔎 Scan this page for ALL media
-      <span class="sub2">images · video · audio · docs — no setup needed</span>
-    </button>
+  <!-- Navigation Tabs -->
+  <nav class="nav-tabs">
+    <button class="nav-tab active" data-tab="tab-extractor">⚡ Extractor</button>
+    <button class="nav-tab" data-tab="tab-engine">🎬 1-Click Engine</button>
+    <button class="nav-tab" data-tab="tab-adblock">🛡️ Ad Blocker</button>
+    <button class="nav-tab" data-tab="tab-settings">⚙ Settings</button>
+  </nav>
 
-    <div id="badPage" class="bad-page hidden">Open a normal web page to scan it.</div>
+  <!-- TAB 1: In-Popup Extractor -->
+  <section id="tab-extractor" class="tab-content active">
+    <div class="page-meta-strip">
+      <span id="pageTitle" class="page-title-text">Detecting page resources…</span>
+      <div class="strip-actions">
+        <button id="clearList" class="mini-btn text-danger" title="Clear current list">🧹 Clear</button>
+        <button id="refreshScan" class="mini-btn" title="Rescan current page">🔄 Rescan</button>
+      </div>
+    </div>
 
-    <div class="divider"><span>optional: one-click video download</span></div>
+    <!-- Search Input Bar -->
+    <div class="search-bar-wrap">
+      <input type="text" id="searchInput" class="search-input" placeholder="🔍 Search files by name, resolution or format..." />
+    </div>
 
-    <!-- Only shown when the optional local server is running -->
-    <div id="serverSection" class="hidden">
-      <div class="media">
-        <img id="thumb" class="thumb hidden" alt="">
-        <div class="meta">
-          <div id="title" class="title">Reading this page…</div>
-          <div id="sub" class="sub"></div>
+    <!-- Category Filter Bar -->
+    <div class="cat-filter-bar">
+      <button class="cat-btn active" data-cat="all">All (<span id="c-all">0</span>)</button>
+      <button class="cat-btn" data-cat="video">Videos (<span id="c-video">0</span>)</button>
+      <button class="cat-btn" data-cat="image">Images (<span id="c-image">0</span>)</button>
+      <button class="cat-btn" data-cat="audio">Audio (<span id="c-audio">0</span>)</button>
+      <button class="cat-btn" data-cat="doc">Docs (<span id="c-doc">0</span>)</button>
+    </div>
+
+    <!-- Filter & Bulk Bar -->
+    <div class="tool-bar">
+      <select id="formatFilter" class="select-sm">
+        <option value="all">All Formats</option>
+      </select>
+      <button id="bulkDownload" class="btn-sm btn-primary">⬇ Download View</button>
+    </div>
+
+    <div id="badPage" class="banner-warn hidden">
+      Open a standard web page to scan and extract media files.
+    </div>
+
+    <!-- Resource Grid / List -->
+    <div id="resourceGrid" class="resource-grid">
+      <div class="loading-state">Scanning current tab...</div>
+    </div>
+  </section>
+
+  <!-- TAB 2: 1-Click yt-dlp Engine -->
+  <section id="tab-engine" class="tab-content">
+    <div id="serverSection" class="engine-box hidden">
+      <div class="media-preview">
+        <img id="thumb" class="thumb-img hidden" alt="">
+        <div class="meta-info">
+          <div id="mediaTitle" class="media-title">Reading video data…</div>
+          <div id="mediaSub" class="media-sub"></div>
         </div>
       </div>
-      <div id="presets" class="presets"></div>
+      <div id="presets" class="presets-grid"></div>
       <div id="progressWrap" class="progress-wrap hidden">
-        <div class="bar"><div id="bar" class="bar-fill"></div></div>
+        <div class="bar-track"><div id="bar" class="bar-fill"></div></div>
         <div id="progressText" class="progress-text">Starting…</div>
       </div>
-      <div id="status" class="status"></div>
+      <div id="status" class="status-msg"></div>
     </div>
 
-    <!-- Shown when the server is NOT running (non-alarming) -->
-    <div id="serverHint" class="server-hint hidden">
-      For one-click <b>YouTube / streaming</b> video, optionally run the local helper:
+    <div id="serverHint" class="server-hint-box">
+      <div class="hint-title">💡 Helper Server Status</div>
+      <p>For one-click streaming video downloads (YouTube, Dailymotion, X), run the helper server locally or connect to a remote cloud host:</p>
       <code>python3 server/server.py</code>
-      <span class="hint-actions">
-        <button id="copyCmd" class="mini">Copy</button>
-        <button id="retry" class="mini">Recheck</button>
-      </span>
+      <div class="hint-actions">
+        <button id="copyCmd" class="mini-btn">Copy Cmd</button>
+        <button id="retryServer" class="mini-btn">Recheck</button>
+      </div>
     </div>
+  </section>
 
-    <!-- Backend Settings configuration panel -->
-    <div id="settingsPanel" class="settings-panel hidden">
-      <div class="settings-title">⚙ Backend Settings</div>
-      <div class="settings-desc">Enter your remote/local helper server URL:</div>
-      <div class="settings-row">
-        <input type="text" id="serverUrlInput" placeholder="http://127.0.0.1:8787" />
-        <button id="saveServerUrl" class="mini">Save</button>
+  <!-- TAB 3: Ad Blocker -->
+  <section id="tab-adblock" class="tab-content">
+    <div class="adblock-card">
+      <div class="adblock-header">
+        <div class="adblock-title">
+          <span class="shield-icon">🛡️</span>
+          <div>
+            <h3>Ad & Tracker Shield</h3>
+            <p>Blocks annoying ads, popups, and tracking scripts</p>
+          </div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="adblockToggle" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="adblock-stats">
+        <div class="stat-pill">
+          <span class="stat-num" id="ruleCount">20+</span>
+          <span class="stat-label">Active Filter Rules</span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-num">ON</span>
+          <span class="stat-label">Cosmetic Hiding</span>
+        </div>
+      </div>
+      <div class="adblock-features">
+        <div class="feature-item">✓ Blocks Google, Dailymotion, DoubleClick & Taboola Ads</div>
+        <div class="feature-item">✓ Prevents tracking scripts & telemetry from slowing down pages</div>
+        <div class="feature-item">✓ Automatically hides video overlays & empty ad slots</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- TAB 4: Settings & Engine Model Selector -->
+  <section id="tab-settings" class="tab-content">
+    <div class="settings-card">
+      <h3 class="settings-heading">⚙ Engine & Backend Settings</h3>
+
+      <!-- Engine Model Selector -->
+      <div class="form-group">
+        <label for="engineModelSelect">Extraction Engine Model:</label>
+        <select id="engineModelSelect" class="form-select">
+          <option value="auto">Auto (Smart Pick: Backend if available, else In-Browser)</option>
+          <option value="browser">In-Browser Extractor (Direct Files + HLS Offscreen Muxer)</option>
+          <option value="backend">Python Backend (yt-dlp Engine)</option>
+        </select>
+        <p class="field-help">Choose how Media Extractor PRO processes media requests.</p>
+      </div>
+
+      <!-- Backend Server URL -->
+      <div class="form-group">
+        <label for="serverUrlInput">Helper Server URL:</label>
+        <input type="text" id="serverUrlInput" class="form-input" placeholder="http://127.0.0.1:8787" />
+        <p class="field-help">Local helper or hosted remote cloud endpoint (Render / Railway / VPS).</p>
+      </div>
+
+      <!-- API Key Optional -->
+      <div class="form-group">
+        <label for="apiKeyInput">API Key (Optional for Hosted Servers):</label>
+        <input type="password" id="apiKeyInput" class="form-input" placeholder="Enter API Key if configured on server" />
+      </div>
+
+      <!-- Filename Confirmation Prompt Option -->
+      <div class="form-group flex-row">
+        <input type="checkbox" id="confirmNameToggle" />
+        <label for="confirmNameToggle" class="mb-0">Confirm / prompt filename before saving</label>
+      </div>
+
+      <button id="saveSettingsBtn" class="btn-primary btn-block">Save Settings</button>
+      <div id="settingsStatus" class="status-msg mt-2"></div>
+    </div>
+  </section>
+
+  <!-- Bulk Download Modal -->
+  <div id="bulkModal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <h3 class="modal-title">📦 Bulk Download Options</h3>
+      <p class="modal-desc">How would you like to download <span id="bulkCount">0</span> selected media files?</p>
+      <div class="modal-options">
+        <button id="dlZipBtn" class="btn-modal btn-primary">
+          📦 Download as ZIP Archive
+          <span class="btn-sub">Combines all files into 1 single .zip file (Recommended)</span>
+        </button>
+        <button id="dlIndivBtn" class="btn-modal btn-secondary">
+          📁 Download as Individual Files
+          <span class="btn-sub">Saves each file separately into Downloads folder</span>
+        </button>
+      </div>
+      <button id="cancelModalBtn" class="mini-btn mt-2">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Video Preview Player Modal -->
+  <div id="videoModal" class="modal-overlay hidden">
+    <div class="video-modal-card">
+      <div class="video-modal-header">
+        <span id="videoTitle" class="video-modal-title">Media Preview</span>
+        <button id="closeVideoBtn" class="mini-btn text-danger">✕ Close</button>
+      </div>
+      <div class="video-wrapper">
+        <video id="previewPlayer" controls autoplay></video>
       </div>
     </div>
   </div>
 
-  <div class="foot">
-    <span id="serverState" class="server-state">checking…</span>
-    <span id="toggleSettings" class="muted" style="cursor: pointer; text-decoration: underline;">⚙ settings</span>
-  </div>
+  <!-- Footer -->
+  <footer class="app-footer">
+    <span id="serverState" class="server-state-pill">checking…</span>
+    <span id="versionTag" class="version-tag">v2.3 PRO</span>
+  </footer>
 
   <script src="popup.js"></script>
 </body>

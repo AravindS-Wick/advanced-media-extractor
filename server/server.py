@@ -116,6 +116,8 @@ def run_download(job_id, url, preset):
             JOBS[job_id].update(status="error", error=str(e)[:500])
 
 
+API_KEY = os.environ.get("API_KEY", "").strip()
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):  # quieter
         pass
@@ -123,7 +125,7 @@ class Handler(BaseHTTPRequestHandler):
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-API-Key")
 
     def _json(self, code, payload):
         body = json.dumps(payload).encode("utf-8")
@@ -134,6 +136,12 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _check_auth(self):
+        if not API_KEY:
+            return True
+        req_key = self.headers.get("X-API-Key") or parse_qs(urlparse(self.path).query).get("key", [""])[0]
+        return req_key == API_KEY
+
     def do_OPTIONS(self):
         self.send_response(204)
         self._cors()
@@ -143,8 +151,17 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         q = parse_qs(u.query)
         if u.path == "/health":
-            return self._json(200, {"ok": True, "ytdlp": bool(YTDLP), "ffmpeg": bool(FFMPEG),
-                                    "downloadDir": DOWNLOAD_DIR})
+            return self._json(200, {
+                "ok": True,
+                "ytdlp": bool(YTDLP),
+                "ffmpeg": bool(FFMPEG),
+                "downloadDir": DOWNLOAD_DIR,
+                "authRequired": bool(API_KEY),
+                "version": "2.1"
+            })
+        if not self._check_auth():
+            return self._json(401, {"error": "Unauthorized — invalid API Key"})
+
         if u.path == "/resolve":
             url = (q.get("url") or [""])[0]
             if not url:
@@ -183,6 +200,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(404, {"error": "not found"})
 
     def do_POST(self):
+        if not self._check_auth():
+            return self._json(401, {"error": "Unauthorized — invalid API Key"})
         u = urlparse(self.path)
         if u.path != "/download":
             return self._json(404, {"error": "not found"})
