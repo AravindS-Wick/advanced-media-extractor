@@ -1,0 +1,52 @@
+/* Media Extractor PRO — Cosmetic Ad Blocker Styles */
+
+/* General Ad Banners & Containers */
+[id*="google_ads"],
+[id*="gpt-ad"],
+[class*="ad-box"],
+[class*="ad-container"],
+[class*="ad-banner"],
+[class*="ad-unit"],
+[class*="ad-wrapper"],
+[class*="ad-slot"],
+.sponsored-post,
+.sponsored-content,
+.trc_rbox_outer,
+.outbrain-template,
+.taboola,
+.criteo-ad,
+.ad-header,
+.ad-footer,
+div[id^="ad_"],
+div[class^="ad_"],
+iframe[src*="doubleclick.net"],
+iframe[src*="googlesyndication.com"],
+iframe[src*="adservice"],
+iframe[src*="adsystem"] {
+  display: none !important;
+  visibility: hidden !important;
+  height: 0 !important;
+  pointer-events: none !important;
+}
+
+/* Dailymotion Specific Ad Elements */
+.dm-player-ad,
+.dm-ad-companion,
+[class*="dm-ad-"],
+div[id*="dailymotion-ad"] {
+  display: none !important;
+}
+
+/* YouTube Specific Ad Elements */
+#player-ads,
+.ytp-ad-module,
+.ytp-ad-overlay-container,
+.ytp-ad-text,
+ytd-promoted-sparkles-web-renderer,
+ytd-promoted-video-renderer,
+ytd-display-ad-renderer,
+ytd-banner-promo-renderer,
+ytd-statement-banner-renderer,
+ytd-in-feed-ad-layout-renderer {
+  display: none !important;
+}
