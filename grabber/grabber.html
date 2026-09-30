@@ -5,6 +5,7 @@
   <title>Media Extractor PRO — Page Grabber</title>
   <link rel="stylesheet" href="grabber.css">
   <script src="../lib/zip-builder.js"></script>
+  <script src="../lib/hls-downloader.js"></script>
 </head>
 <body>
   <header>
@@ -22,6 +23,7 @@
     <button class="tab" data-cat="image">🖼 Images <span id="c-image" class="badge">0</span></button>
     <button class="tab" data-cat="audio">🎵 Audio <span id="c-audio" class="badge">0</span></button>
     <button class="tab" data-cat="doc">📄 Docs <span id="c-doc" class="badge">0</span></button>
+    <button class="tab" id="downloadsTabBtn" data-view="downloads">📥 Downloads <span id="activeDlCountBadge" class="badge-tab-count hidden">0</span></button>
   </nav>
 
   <div class="controls-bar">
@@ -38,8 +40,9 @@
       <label for="sortBy">Sort By:</label>
       <select id="sortBy">
         <option value="default">Default</option>
-        <option value="name">Name</option>
+        <option value="quality">Quality / Resolution</option>
         <option value="size">Size</option>
+        <option value="name">Name</option>
         <option value="type">Type/Extension</option>
       </select>
     </div>
@@ -55,9 +58,66 @@
   <div id="status" class="status">Scanning this page…</div>
 
   <main>
-    <div class="bulk"><button id="dlAll" class="btn btn-primary">⬇ Download all in this view</button></div>
+    <div class="bulk" style="display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap;">
+      <div style="display: flex; gap: 8px; align-items: center;">
+        <button id="dlAll" class="btn btn-primary">⬇ Download All in This View</button>
+        <button id="exportTxtBtn" class="btn btn-secondary" title="Export URLs to .txt for yt-dlp, aria2c, or wget">📄 Export Links (.txt)</button>
+        <button id="exportJsonBtn" class="btn btn-secondary" title="Export full metadata to .json">📋 Export (.json)</button>
+      </div>
+    </div>
     <div id="grid" class="grid"></div>
   </main>
+
+  <!-- TAB: Downloads Manager -->
+  <section id="downloadsView" class="downloads-view hidden">
+    <div class="downloads-header-bar">
+      <div class="dl-head-title">
+        <span class="dl-head-icon">📥</span>
+        <div>
+          <div class="dl-title-text">Downloads Manager</div>
+          <div class="dl-subtitle-text">Browser-wide tracker &bull; IndexedDB (1000+ Days)</div>
+        </div>
+      </div>
+      <div class="dl-header-actions">
+        <button id="exportDlHistoryBtn" class="mini-btn" title="Export full database records (ready for Cloud DB)">💾 Export</button>
+        <button id="clearDlHistoryBtn" class="mini-btn text-danger" title="Clear completed downloads history">🧹 Clear</button>
+      </div>
+    </div>
+
+    <!-- Date & Search Filter Toolbar -->
+    <div class="dl-filter-toolbar">
+      <div class="dl-search-row">
+        <input type="text" id="dlSearchInput" class="dl-search-input" placeholder="🔍 Search by name, site, or path..." />
+      </div>
+      <div class="dl-pills-row">
+        <div class="dl-pills-scroll">
+          <button class="dl-filter-pill active" data-filter="today">📅 Today</button>
+          <button class="dl-filter-pill" data-filter="yesterday">Yesterday</button>
+          <button class="dl-filter-pill" data-filter="7days">Last 7 Days</button>
+          <button class="dl-filter-pill" data-filter="30days">Last 30 Days</button>
+          <button class="dl-filter-pill" data-filter="all">All Time</button>
+          <button class="dl-filter-pill" data-filter="custom" id="dlCustomFilterBtn">📆 Custom</button>
+        </div>
+        <input type="date" id="dlCustomDateInput" class="dl-date-picker hidden" />
+      </div>
+      <div id="dlSummaryStats" class="dl-summary-bar">
+        <span id="dlStatsCount">Showing 0 files</span>
+        <span id="dlStatsSize">0 MB total</span>
+      </div>
+    </div>
+
+    <!-- Active Tasks Section -->
+    <div class="dl-section-label">Active Downloads (<span id="activeDlCount">0</span>)</div>
+    <div id="activeDownloadsList" class="downloads-list-group">
+      <div class="empty-dl-sub">No downloads currently in progress.</div>
+    </div>
+
+    <!-- Completed Downloads Section -->
+    <div class="dl-section-label" style="margin-top: 14px;">Completed &amp; Saved (<span id="completedDlCount">0</span>)</div>
+    <div id="completedDownloadsList" class="downloads-list-group">
+      <div class="empty-dl-sub">No completed download history.</div>
+    </div>
+  </section>
 
   <!-- Bulk Download Modal -->
   <div id="bulkModal" class="modal-overlay hidden">
@@ -82,17 +142,94 @@
   <div id="videoModal" class="modal-overlay hidden">
     <div class="video-modal-card">
       <div class="video-modal-header">
-        <span id="videoTitle" class="video-modal-title">Media Preview</span>
-        <button id="closeVideoBtn" class="mini-btn text-danger">✕ Close</button>
+        <div class="video-title-wrap">
+          <span class="video-icon-badge">🎬</span>
+          <span id="videoTitle" class="video-modal-title">Media Preview</span>
+        </div>
+        <div class="video-header-actions">
+          <button id="popoutPlayerBtn" class="mini-btn text-primary" title="Play in a separate tab (Theater Mode)">↗ Open in Tab</button>
+          <button id="closeVideoBtn" class="mini-btn text-danger">✕ Close</button>
+        </div>
       </div>
-      <div class="video-wrapper">
-        <video id="previewPlayer" controls autoplay></video>
+      
+      <!-- Video Container Viewport -->
+      <div id="videoContainer" class="video-player-container">
+        <video id="previewPlayer" preload="metadata" playsinline></video>
+        
+        <!-- Big Play/Pause Center Overlay -->
+        <button id="playerBigPlayBtn" class="player-big-play-btn" title="Play / Pause (Space)">▶</button>
+        
+        <!-- Spinner Overlay -->
+        <div id="playerSpinner" class="player-spinner hidden"></div>
+
+        <!-- Notification Toast (e.g. +20s, -20s, Muted) -->
+        <div id="playerToast" class="player-toast hidden"></div>
+      </div>
+
+      <!-- Image Preview Viewport -->
+      <div id="imageContainer" class="image-preview-container hidden">
+        <img id="previewImage" alt="Preview Image" />
+      </div>
+
+      <!-- Document Preview Viewport -->
+      <div id="docContainer" class="doc-preview-container hidden">
+        <iframe id="previewDoc" class="doc-preview-frame" frameborder="0"></iframe>
+        <div id="previewDocFallback" class="doc-fallback-mini hidden">
+          <div style="font-size: 40px;">📄</div>
+          <div id="previewDocFallbackName" style="font-size: 14px; font-weight: 600; color: #fff; margin-top: 8px;">Document</div>
+          <p style="font-size: 12px; color: #94a3b8; margin-top: 4px;">Click "Open in Tab" to view or download.</p>
+        </div>
+      </div>
+
+      <!-- Custom Player Controls Bar -->
+      <div class="player-controls-bar">
+        <!-- Progress Bar / Timeline Scrubber -->
+        <div class="player-timeline-wrap">
+          <div class="player-timeline-track">
+            <div id="playerBufferBar" class="player-buffer-bar"></div>
+            <div id="playerProgressBar" class="player-progress-bar"></div>
+            <input type="range" id="playerSeekSlider" class="player-seek-slider" min="0" max="100" step="0.1" value="0" title="Seek" />
+          </div>
+        </div>
+
+        <!-- Controls Toolbar Row -->
+        <div class="player-toolbar-row">
+          <div class="toolbar-left">
+            <button id="playerPlayPauseBtn" class="player-ctrl-btn" title="Play / Pause (Space)">▶</button>
+            <button id="playerRewind20Btn" class="player-ctrl-btn player-jump-btn" title="Rewind 20s (Left Arrow)">⏪ -20s</button>
+            <button id="playerForward20Btn" class="player-ctrl-btn player-jump-btn" title="Forward 20s (Right Arrow)">+20s ⏩</button>
+            
+            <div class="player-volume-group">
+              <button id="playerVolumeBtn" class="player-ctrl-btn" title="Mute / Unmute (M)">🔊</button>
+              <div class="vol-slider-wrap">
+                <input type="range" id="playerVolumeSlider" class="player-vol-slider" min="0" max="1" step="0.05" value="1" title="Volume" />
+              </div>
+            </div>
+
+            <span id="playerTimeDisplay" class="player-time-text">00:00 / 00:00</span>
+          </div>
+
+          <div class="toolbar-right">
+            <button id="playerDownloadBtn" class="player-ctrl-btn player-dl-btn" title="Download this video">⬇ Download</button>
+            <select id="playerSpeedSelect" class="player-speed-select" title="Playback Speed">
+              <option value="0.5">0.5x</option>
+              <option value="0.75">0.75x</option>
+              <option value="1" selected>1.0x</option>
+              <option value="1.25">1.25x</option>
+              <option value="1.5">1.5x</option>
+              <option value="2">2.0x</option>
+            </select>
+            <button id="playerPipBtn" class="player-ctrl-btn" title="Picture in Picture (P)">🗗</button>
+            <button id="playerFullscreenBtn" class="player-ctrl-btn" title="Fullscreen (F)">⛶</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
 
   <footer><span id="serverState" class="muted">in-browser mode</span></footer>
 
+  <script src="../lib/download-db.js"></script>
   <script src="grabber.js"></script>
 </body>
 </html>

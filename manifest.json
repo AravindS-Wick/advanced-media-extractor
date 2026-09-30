@@ -6,12 +6,15 @@
   "permissions": [
     "declarativeNetRequest",
     "webRequest",
+    "webNavigation",
     "offscreen",
     "tabs",
     "cookies",
     "storage",
     "scripting",
-    "downloads"
+    "downloads",
+    "downloads.open",
+    "unlimitedStorage"
   ],
   "host_permissions": [
     "<all_urls>",
@@ -38,6 +41,7 @@
     {
       "matches": ["<all_urls>"],
       "js": ["content/media-scraper.js"],
+      "css": ["content/cosmetic-adblock.css"],
       "run_at": "document_idle"
     },
     {
@@ -45,11 +49,25 @@
       "js": ["content/page-extractor.js"],
       "run_at": "document_start",
       "world": "MAIN"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/redirect-blocker.js"],
+      "css": ["content/redirect-blocker.css"],
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/redirect-guard-main.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["content/page-extractor.js", "lib/zip-builder.js"],
+      "resources": ["content/page-extractor.js", "lib/zip-builder.js", "lib/hls-downloader.js"],
       "matches": ["<all_urls>"]
     }
   ]

@@ -9,6 +9,11 @@
     "lint": "eslint .",
     "build": "node -e \"console.log('Build OK')\""
   },
+  "jest": {
+    "testMatch": [
+      "**/tests/**/*.test.js"
+    ]
+  },
   "keywords": [
     "chrome-extension",
     "media-extractor",
