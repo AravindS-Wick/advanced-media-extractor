@@ -4,6 +4,8 @@
 <body>
   <!-- Hidden worker page: fetches + assembles HLS segments into a downloadable file.
        Service workers can't use Blob/createObjectURL, so this offscreen DOM does it. -->
+  <script src="../lib/hls-downloader.js"></script>
+  <script src="../lib/zip-builder.js"></script>
   <script src="muxer.js"></script>
 </body>
 </html>
