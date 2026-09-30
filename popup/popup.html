@@ -6,6 +6,7 @@
   <title>Media Extractor PRO</title>
   <link rel="stylesheet" href="popup.css">
   <script src="../lib/zip-builder.js"></script>
+  <script src="../lib/hls-downloader.js"></script>
 </head>
 <body>
   <!-- Extension Header -->
@@ -23,6 +24,7 @@
   <!-- Navigation Tabs -->
   <nav class="nav-tabs">
     <button class="nav-tab active" data-tab="tab-extractor">⚡ Extractor</button>
+    <button class="nav-tab" data-tab="tab-downloads">📥 Downloads <span id="activeDlCountBadge" class="badge-tab-count hidden">0</span></button>
     <button class="nav-tab" data-tab="tab-engine">🎬 1-Click Engine</button>
     <button class="nav-tab" data-tab="tab-adblock">🛡️ Ad Blocker</button>
     <button class="nav-tab" data-tab="tab-settings">⚙ Settings</button>
@@ -54,9 +56,20 @@
 
     <!-- Filter & Bulk Bar -->
     <div class="tool-bar">
-      <select id="formatFilter" class="select-sm">
-        <option value="all">All Formats</option>
-      </select>
+      <div class="filters-group">
+        <select id="formatFilter" class="select-sm" title="Filter by file format">
+          <option value="all">All Formats</option>
+        </select>
+        <select id="sortFilter" class="select-sm" title="Sort media contents">
+          <option value="default">Sort: Default</option>
+          <option value="size-desc">Sort: Size ⬇ (Largest)</option>
+          <option value="size-asc">Sort: Size ⬆ (Smallest)</option>
+          <option value="quality-desc">Sort: Quality (Highest)</option>
+          <option value="name-asc">Sort: Name (A → Z)</option>
+          <option value="name-desc">Sort: Name (Z → A)</option>
+          <option value="type-asc">Sort: Type / Format</option>
+        </select>
+      </div>
       <button id="bulkDownload" class="btn-sm btn-primary">⬇ Download View</button>
     </div>
 
@@ -64,9 +77,70 @@
       Open a standard web page to scan and extract media files.
     </div>
 
+    <!-- YouTube Muxing / High-Res Info Banner -->
+    <div id="ytMuxBanner" class="yt-mux-banner hidden">
+      <div style="font-size: 20px;">🎬</div>
+      <div style="flex: 1;">
+        <div style="font-weight: 600; color: #fff; font-size: 11px;">YouTube 1080p/4K with Audio</div>
+        <div style="font-size: 10px; color: #cbd5e1; margin-top: 1px;">YouTube splits 1080p+ into separate video & audio files. Use the 1-Click Engine to download them merged into one MP4!</div>
+      </div>
+      <button id="goToEngineBtn" class="mini-btn" style="background:#6366f1; color:#fff; border:none; padding:4px 8px; font-size:10px; font-weight:600; border-radius:4px; cursor:pointer; flex-shrink: 0;">Switch to 🎬 Engine</button>
+    </div>
+
     <!-- Resource Grid / List -->
     <div id="resourceGrid" class="resource-grid">
       <div class="loading-state">Scanning current tab...</div>
+    </div>
+  </section>
+
+  <!-- TAB: Downloads Manager -->
+  <section id="tab-downloads" class="tab-content">
+    <div class="downloads-header-bar">
+      <div class="dl-head-title">
+        <span class="dl-head-icon">📥</span>
+        <div>
+          <div class="dl-title-text">Downloads Manager</div>
+          <div class="dl-subtitle-text">Browser-wide tracker &bull; IndexedDB (1000+ Days)</div>
+        </div>
+      </div>
+      <div class="dl-header-actions">
+        <button id="exportDlHistoryBtn" class="mini-btn" title="Export full database records (ready for Cloud DB)">💾 Export</button>
+        <button id="clearDlHistoryBtn" class="mini-btn text-danger" title="Clear completed downloads history">🧹 Clear</button>
+      </div>
+    </div>
+
+    <!-- Date & Search Filter Toolbar -->
+    <div class="dl-filter-toolbar">
+      <div class="dl-search-row">
+        <input type="text" id="dlSearchInput" class="dl-search-input" placeholder="🔍 Search by name, site, or path..." />
+      </div>
+      <div class="dl-pills-row">
+        <div class="dl-pills-scroll">
+          <button class="dl-filter-pill active" data-filter="today">📅 Today</button>
+          <button class="dl-filter-pill" data-filter="yesterday">Yesterday</button>
+          <button class="dl-filter-pill" data-filter="7days">Last 7 Days</button>
+          <button class="dl-filter-pill" data-filter="30days">Last 30 Days</button>
+          <button class="dl-filter-pill" data-filter="all">All Time</button>
+          <button class="dl-filter-pill" data-filter="custom" id="dlCustomFilterBtn">📆 Custom</button>
+        </div>
+        <input type="date" id="dlCustomDateInput" class="dl-date-picker hidden" />
+      </div>
+      <div id="dlSummaryStats" class="dl-summary-bar">
+        <span id="dlStatsCount">Showing 0 files</span>
+        <span id="dlStatsSize">0 MB total</span>
+      </div>
+    </div>
+
+    <!-- Active Tasks Section -->
+    <div class="dl-section-label">Active Downloads (<span id="activeDlCount">0</span>)</div>
+    <div id="activeDownloadsList" class="downloads-list-group">
+      <div class="empty-dl-sub">No downloads currently in progress.</div>
+    </div>
+
+    <!-- Completed Downloads Section -->
+    <div class="dl-section-label" style="margin-top: 14px;">Completed &amp; Saved (<span id="completedDlCount">0</span>)</div>
+    <div id="completedDownloadsList" class="downloads-list-group">
+      <div class="empty-dl-sub">No completed download history.</div>
     </div>
   </section>
 
@@ -102,34 +176,113 @@
   <!-- TAB 3: Ad Blocker -->
   <section id="tab-adblock" class="tab-content">
     <div class="adblock-card">
-      <div class="adblock-header">
-        <div class="adblock-title">
-          <span class="shield-icon">🛡️</span>
-          <div>
-            <h3>Ad & Tracker Shield</h3>
-            <p>Blocks annoying ads, popups, and tracking scripts</p>
+      <!-- Current Domain Shield Box -->
+      <div class="domain-shield-box">
+        <div class="domain-shield-head">
+          <div class="domain-info">
+            <span class="domain-icon">🌐</span>
+            <div>
+              <div class="domain-name" id="adblockCurrentDomain">Loading site…</div>
+              <div class="domain-status-label" id="adblockDomainStatus">Checking protection status…</div>
+            </div>
           </div>
+          <label class="switch">
+            <input type="checkbox" id="adblockDomainToggle" checked>
+            <span class="slider"></span>
+          </label>
         </div>
-        <label class="switch">
-          <input type="checkbox" id="adblockToggle" checked>
-          <span class="slider"></span>
-        </label>
+        <div id="domainActionTip" class="domain-action-tip">Toggle ad blocking for this specific website</div>
       </div>
+
+      <!-- Stats Bar -->
       <div class="adblock-stats">
         <div class="stat-pill">
           <span class="stat-num" id="ruleCount">20+</span>
           <span class="stat-label">Active Filter Rules</span>
         </div>
         <div class="stat-pill">
-          <span class="stat-num">ON</span>
-          <span class="stat-label">Cosmetic Hiding</span>
+          <span class="stat-num" id="pausedDomainCount">0</span>
+          <span class="stat-label">Paused Sites</span>
         </div>
       </div>
-      <div class="adblock-features">
-        <div class="feature-item">✓ Blocks Google, Dailymotion, DoubleClick & Taboola Ads</div>
-        <div class="feature-item">✓ Prevents tracking scripts & telemetry from slowing down pages</div>
-        <div class="feature-item">✓ Automatically hides video overlays & empty ad slots</div>
+
+      <!-- Whitelisted / Paused Domains List -->
+      <div class="domain-whitelist-section">
+        <div class="section-subtitle">Paused Websites (Ad Block Disabled):</div>
+        <div id="whitelistDomainList" class="whitelist-chips-wrap">
+          <span class="empty-hint">No sites paused. All sites protected.</span>
+        </div>
       </div>
+
+      <!-- Global Shield Toggle -->
+      <div class="global-shield-row">
+        <div class="global-info">
+          <span class="global-title">Global Ad & Tracker Shield</span>
+          <span class="global-desc">Master switch for all websites</span>
+        </div>
+        <label class="switch switch-sm">
+          <input type="checkbox" id="adblockGlobalToggle" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+    </div>
+
+    <!-- ── Redirect Shield Card ── -->
+    <div class="adblock-card redirect-shield-card">
+      <div class="redirect-shield-header">
+        <div class="redirect-shield-title">
+          <span class="redirect-shield-icon">↩</span>
+          <div>
+            <div class="global-title">Redirect Link Blocker</div>
+            <div class="global-desc">Stops hidden tracker &amp; redirect links before navigation</div>
+          </div>
+        </div>
+        <label class="switch switch-sm">
+          <input type="checkbox" id="redirectBlockerToggle" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <!-- Redirect Stats -->
+      <div class="adblock-stats" style="margin-top:10px">
+        <div class="stat-pill">
+          <span class="stat-num" id="redirectBlockedCount">0</span>
+          <span class="stat-label">Redirects Blocked</span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-num" id="redirectSessionAllowedCount">0</span>
+          <span class="stat-label">Session Allowed</span>
+        </div>
+      </div>
+
+      <!-- Current site's status under redirect blocker -->
+      <div class="domain-shield-box" style="margin-top:10px">
+        <div class="domain-shield-head">
+          <div class="domain-info">
+            <span class="domain-icon">🔗</span>
+            <div>
+              <div class="domain-name" id="redirectCurrentDomain">Loading…</div>
+              <div class="domain-status-label" id="redirectDomainStatus">Redirect blocking active on this site</div>
+            </div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="redirectDomainToggle" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="domain-action-tip">Pause redirect blocking on this specific domain</div>
+      </div>
+
+      <!-- Paused redirect domains -->
+      <div class="domain-whitelist-section" style="margin-top:10px">
+        <div class="section-subtitle">Redirect Blocking Paused On:</div>
+        <div id="redirectPausedDomainList" class="whitelist-chips-wrap">
+          <span class="empty-hint">No sites paused. All redirects intercepted.</span>
+        </div>
+      </div>
+
+      <!-- Reset stats button -->
+      <button id="resetRedirectStats" class="mini-btn" style="margin-top:10px;width:100%">🔄 Reset Blocked Count</button>
     </div>
   </section>
 
@@ -171,6 +324,20 @@
       <button id="saveSettingsBtn" class="btn-primary btn-block">Save Settings</button>
       <div id="settingsStatus" class="status-msg mt-2"></div>
     </div>
+
+    <div class="settings-card" style="margin-top: 12px;">
+      <h3 class="settings-heading">📥 Downloads</h3>
+
+      <!-- Default Download Folder -->
+      <div class="form-group">
+        <label for="downloadFolderInput">Downloads Subfolder:</label>
+        <input type="text" id="downloadFolderInput" class="form-input" placeholder="e.g. MediaExtractorPRO (leave blank for the default Downloads folder)" />
+        <p class="field-help">A subfolder <em>name</em> only — e.g. <code>MediaExtractorPRO</code> or <code>Shows/Anime</code>. This can never be a drive letter or full disk path (<code>D:\Anime</code>, <code>C:\Users\you\Videos</code>) — Chrome doesn't let extensions write anywhere outside the browser's own Downloads directory, full stop, so anything that looks like a drive letter gets stripped out. To actually change <em>where</em> Downloads itself points — e.g. a different drive entirely — set that in <code>chrome://settings/downloads</code> → Location; this field then adds a subfolder on top of whatever that is.</p>
+      </div>
+
+      <button id="saveDownloadFolderBtn" class="btn-primary btn-block">Save Download Folder</button>
+      <div id="downloadFolderStatus" class="status-msg mt-2"></div>
+    </div>
   </section>
 
   <!-- Bulk Download Modal -->
@@ -196,11 +363,87 @@
   <div id="videoModal" class="modal-overlay hidden">
     <div class="video-modal-card">
       <div class="video-modal-header">
-        <span id="videoTitle" class="video-modal-title">Media Preview</span>
-        <button id="closeVideoBtn" class="mini-btn text-danger">✕ Close</button>
+        <div class="video-title-wrap">
+          <span class="video-icon-badge">🎬</span>
+          <span id="videoTitle" class="video-modal-title">Media Preview</span>
+        </div>
+        <div class="video-header-actions">
+          <button id="popoutPlayerBtn" class="mini-btn text-primary" title="Play in a separate tab (Theater Mode)">↗ Open in Tab</button>
+          <button id="closeVideoBtn" class="mini-btn text-danger">✕ Close</button>
+        </div>
       </div>
-      <div class="video-wrapper">
-        <video id="previewPlayer" controls autoplay></video>
+      
+      <!-- Video Container Viewport -->
+      <div id="videoContainer" class="video-player-container">
+        <video id="previewPlayer" preload="metadata" playsinline></video>
+        
+        <!-- Big Play/Pause Center Overlay -->
+        <button id="playerBigPlayBtn" class="player-big-play-btn" title="Play / Pause (Space)">▶</button>
+        
+        <!-- Spinner Overlay -->
+        <div id="playerSpinner" class="player-spinner hidden"></div>
+
+        <!-- Notification Toast (e.g. +20s, -20s, Muted) -->
+        <div id="playerToast" class="player-toast hidden"></div>
+      </div>
+
+      <!-- Image Preview Viewport -->
+      <div id="imageContainer" class="image-preview-container hidden">
+        <img id="previewImage" alt="Preview Image" />
+      </div>
+
+      <!-- Document Preview Viewport -->
+      <div id="docContainer" class="doc-preview-container hidden">
+        <iframe id="previewDoc" class="doc-preview-frame" frameborder="0"></iframe>
+        <div id="previewDocFallback" class="doc-fallback-mini hidden">
+          <div style="font-size: 36px;">📄</div>
+          <div id="previewDocFallbackName" style="font-size: 13px; font-weight: 600; color: #fff; margin-top: 6px;">Document</div>
+          <p style="font-size: 11px; color: #94a3b8; margin-top: 4px;">Click "Open in Tab" to view or download.</p>
+        </div>
+      </div>
+
+      <!-- Custom Player Controls Bar -->
+      <div class="player-controls-bar">
+        <!-- Progress Bar / Timeline Scrubber -->
+        <div class="player-timeline-wrap">
+          <div class="player-timeline-track">
+            <div id="playerBufferBar" class="player-buffer-bar"></div>
+            <div id="playerProgressBar" class="player-progress-bar"></div>
+            <input type="range" id="playerSeekSlider" class="player-seek-slider" min="0" max="100" step="0.1" value="0" title="Seek" />
+          </div>
+        </div>
+
+        <!-- Controls Toolbar Row -->
+        <div class="player-toolbar-row">
+          <div class="toolbar-left">
+            <button id="playerPlayPauseBtn" class="player-ctrl-btn" title="Play / Pause (Space)">▶</button>
+            <button id="playerRewind20Btn" class="player-ctrl-btn player-jump-btn" title="Rewind 10s (Left Arrow)">-10s</button>
+            <button id="playerForward20Btn" class="player-ctrl-btn player-jump-btn" title="Forward 10s (Right Arrow)">+10s</button>
+            
+            <div class="player-volume-group">
+              <button id="playerVolumeBtn" class="player-ctrl-btn" title="Mute / Unmute (M)">🔊</button>
+              <div class="vol-slider-wrap">
+                <input type="range" id="playerVolumeSlider" class="player-vol-slider" min="0" max="1" step="0.05" value="1" title="Volume" />
+              </div>
+            </div>
+
+            <span id="playerTimeDisplay" class="player-time-text">00:00 / 00:00</span>
+          </div>
+
+          <div class="toolbar-right">
+            <select id="playerSpeedSelect" class="player-speed-select" title="Playback Speed">
+              <option value="0.5">0.5x</option>
+              <option value="0.75">0.75x</option>
+              <option value="1" selected>1.0x</option>
+              <option value="1.25">1.25x</option>
+              <option value="1.5">1.5x</option>
+              <option value="2">2.0x</option>
+            </select>
+            <button id="playerPipBtn" class="player-ctrl-btn" title="Picture in Picture (P)">🗗</button>
+            <button id="playerFullscreenBtn" class="player-ctrl-btn" title="Fullscreen (F)">⛶</button>
+            <button id="playerDownloadBtn" class="player-ctrl-btn player-dl-btn" title="Download this video">⬇ Download</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -211,6 +454,7 @@
     <span id="versionTag" class="version-tag">v2.3 PRO</span>
   </footer>
 
+  <script src="../lib/download-db.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
