@@ -27,14 +27,34 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
+import sys
+
 PORT = int(os.environ.get("PORT", 8787))
 DOWNLOAD_DIR = os.path.expanduser("~/Downloads")
 if not os.path.exists(DOWNLOAD_DIR) or not os.access(DOWNLOAD_DIR, os.W_OK):
     DOWNLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-YTDLP = shutil.which("yt-dlp")
 FFMPEG = shutil.which("ffmpeg")
+
+def get_ytdlp_cmd():
+    y = shutil.which("yt-dlp")
+    if y:
+        return [y]
+    cand = os.path.join(os.path.dirname(sys.executable), "yt-dlp.exe")
+    if os.path.exists(cand):
+        return [cand]
+    cand_sh = os.path.join(os.path.dirname(sys.executable), "yt-dlp")
+    if os.path.exists(cand_sh):
+        return [cand_sh]
+    return [sys.executable, "-m", "yt_dlp"]
+
+def check_ytdlp():
+    try:
+        r = subprocess.run([*get_ytdlp_cmd(), "--version"], capture_output=True, timeout=5)
+        return r.returncode == 0
+    except Exception:
+        return False
 
 # job_id -> { status: 'running'|'done'|'error', percent: float, file: str|None, error: str|None }
 JOBS = {}
@@ -54,8 +74,9 @@ DEST_RE = re.compile(rb"\[(?:download|Merger|ExtractAudio)\][^\n]*?(?:Destinatio
 
 
 def run_resolve(url):
+    cmd = [*get_ytdlp_cmd(), "-J", "--no-playlist", "--no-warnings", url]
     out = subprocess.run(
-        [YTDLP, "-J", "--no-playlist", "--no-warnings", url],
+        cmd,
         capture_output=True, timeout=60,
     )
     if out.returncode != 0:
@@ -90,7 +111,7 @@ def run_download(job_id, url, preset):
     else:
         args = PRESETS["best"]
     outtmpl = os.path.join(DOWNLOAD_DIR, "%(title).180B [%(id)s].%(ext)s")
-    cmd = [YTDLP, "--no-playlist", "--newline", "--no-warnings", "--no-part",
+    cmd = [*get_ytdlp_cmd(), "--no-playlist", "--newline", "--no-warnings", "--no-part",
            *args, "-o", outtmpl, url]
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -153,7 +174,7 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/health":
             return self._json(200, {
                 "ok": True,
-                "ytdlp": bool(YTDLP),
+                "ytdlp": check_ytdlp(),
                 "ffmpeg": bool(FFMPEG),
                 "downloadDir": DOWNLOAD_DIR,
                 "authRequired": bool(API_KEY),
