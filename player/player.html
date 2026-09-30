@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Media Extractor PRO — Player</title>
+  <link rel="stylesheet" href="player.css" />
+</head>
+<body>
+  <div class="player-app-container">
+    <!-- Top Navigation & Header Bar -->
+    <header class="player-top-header">
+      <div class="header-left">
+        <a href="#" id="backToGrabberBtn" class="brand-link" title="Open Media Grabber Panel">
+          <span class="brand-icon">⚡</span>
+          <span class="brand-title">Media Extractor PRO</span>
+        </a>
+        <div class="header-divider"></div>
+        <div class="media-title-container">
+          <span id="mediaTypeBadge" class="media-type-badge">VIDEO</span>
+          <h1 id="playerMediaTitle" class="player-media-title" title="Loading Media…">Loading Media…</h1>
+        </div>
+      </div>
+
+      <div class="header-right">
+        <button id="copyUrlBtn" class="header-action-btn" title="Copy raw stream URL to clipboard">
+          <span class="btn-icon">📋</span>
+          <span class="btn-text">Copy URL</span>
+        </button>
+        <button id="sourcePageBtn" class="header-action-btn" title="Go to source web page">
+          <span class="btn-icon">🔗</span>
+          <span class="btn-text">Source Page</span>
+        </button>
+        <button id="downloadBtn" class="header-action-btn btn-accent" title="Download this stream">
+          <span class="btn-icon">⬇</span>
+          <span class="btn-text">Download</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Theater Player & Preview Stage -->
+    <main class="player-main-stage">
+      <!-- 1. Video / Audio Player Viewport -->
+      <div id="playerViewport" class="player-viewport">
+        <!-- Video Tag -->
+        <video id="mainVideoPlayer" preload="auto" playsinline tabindex="0"></video>
+
+        <!-- Big Center Play Button Overlay -->
+        <button id="theaterBigPlayBtn" class="theater-big-play-btn" title="Play / Pause (Space)">▶</button>
+
+        <!-- Loading / Buffering Spinner -->
+        <div id="theaterSpinner" class="theater-spinner hidden"></div>
+
+        <!-- Notification Toast (e.g. +10s, Volume 80%, Speed 1.5x) -->
+        <div id="theaterToast" class="theater-toast hidden"></div>
+
+        <!-- Custom Full Theater Controls Overlay -->
+        <div id="theaterControls" class="theater-controls-wrap">
+          <!-- Timeline Scrubber -->
+          <div class="theater-timeline-box">
+            <div class="theater-timeline-track">
+              <div id="theaterBufferBar" class="theater-buffer-bar"></div>
+              <div id="theaterProgressBar" class="theater-progress-bar"></div>
+              <input type="range" id="theaterSeekSlider" class="theater-seek-slider" min="0" max="100" step="0.05" value="0" title="Seek timeline" />
+            </div>
+          </div>
+
+          <!-- Bottom Action Buttons Row -->
+          <div class="theater-toolbar-row">
+            <!-- Left Controls: Play, Jump, Volume, Time -->
+            <div class="toolbar-group-left">
+              <button id="theaterPlayPauseBtn" class="theater-btn play-btn" title="Play / Pause (Space / K)">▶</button>
+              <button id="theaterRewindBtn" class="theater-btn jump-btn" title="Rewind 10s (Left Arrow)">⏪ -10s</button>
+              <button id="theaterForwardBtn" class="theater-btn jump-btn" title="Forward 10s (Right Arrow)">+10s ⏩</button>
+              
+              <!-- Volume Group -->
+              <div class="theater-volume-group">
+                <button id="theaterVolumeBtn" class="theater-btn vol-icon-btn" title="Mute / Unmute (M)">🔊</button>
+                <div class="theater-vol-slider-wrap">
+                  <input type="range" id="theaterVolumeSlider" class="theater-vol-slider" min="0" max="1" step="0.02" value="1" title="Volume slider (Up / Down)" />
+                </div>
+              </div>
+
+              <!-- Time Display -->
+              <span id="theaterTimeDisplay" class="theater-time-display">00:00 / 00:00</span>
+            </div>
+
+            <!-- Right Controls: Speed, PiP, Theater mode, Fullscreen -->
+            <div class="toolbar-group-right">
+              <div class="speed-selector-wrap">
+                <select id="theaterSpeedSelect" class="theater-select" title="Playback Speed (S)">
+                  <option value="0.25">0.25x</option>
+                  <option value="0.5">0.5x</option>
+                  <option value="0.75">0.75x</option>
+                  <option value="1" selected>1.0x (Normal)</option>
+                  <option value="1.25">1.25x</option>
+                  <option value="1.5">1.5x</option>
+                  <option value="1.75">1.75x</option>
+                  <option value="2">2.0x</option>
+                  <option value="2.5">2.5x</option>
+                </select>
+              </div>
+
+              <button id="theaterPipBtn" class="theater-btn" title="Picture in Picture (P)">🗗</button>
+              <button id="theaterFitBtn" class="theater-btn" title="Toggle Aspect Fit / Fill (W)">↔</button>
+              <button id="theaterFullscreenBtn" class="theater-btn fullscreen-btn" title="Toggle Fullscreen (F)">⛶</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2. Image Preview Stage -->
+      <div id="playerImageStage" class="player-image-stage hidden">
+        <div class="image-stage-canvas" id="imageCanvas">
+          <img id="mainImageViewer" alt="Image Preview" />
+        </div>
+        <!-- Floating Image Controls Toolbar -->
+        <div class="image-stage-toolbar">
+          <button id="imgZoomOutBtn" class="image-tool-btn" title="Zoom Out (-)">🔍−</button>
+          <span id="imgZoomLevel" class="image-zoom-text">100%</span>
+          <button id="imgZoomInBtn" class="image-tool-btn" title="Zoom In (+)">🔍+</button>
+          <button id="imgFitBtn" class="image-tool-btn" title="Fit to Screen (F)">⛶ Fit</button>
+          <button id="imgActualBtn" class="image-tool-btn" title="Actual Size (1:1)">1:1</button>
+          <button id="imgRotateBtn" class="image-tool-btn" title="Rotate 90° (R)">🔄 Rotate</button>
+        </div>
+      </div>
+
+      <!-- 3. Document Preview Stage -->
+      <div id="playerDocStage" class="player-doc-stage hidden">
+        <iframe id="mainDocViewer" class="doc-viewer-frame" frameborder="0"></iframe>
+        <div id="docFallbackNotice" class="doc-fallback-card hidden">
+          <div class="doc-fallback-icon">📄</div>
+          <h2 id="docFallbackTitle" class="doc-fallback-title">Document Preview</h2>
+          <p id="docFallbackDesc" class="doc-fallback-desc">This document format cannot be rendered directly inside an embedded frame.</p>
+          <div class="doc-fallback-actions">
+            <button id="docFallbackDownloadBtn" class="header-action-btn btn-accent">⬇ Download File</button>
+            <a id="docFallbackOpenLink" href="#" target="_blank" class="header-action-btn">↗ Open in Tab</a>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Bottom Media Metadata & Keyboard Shortcuts Bar -->
+    <footer class="player-info-footer">
+      <div class="info-card">
+        <div class="info-card-header">
+          <span class="info-tag">STREAM METADATA</span>
+          <span id="streamResBadge" class="info-badge">Auto</span>
+        </div>
+        <div class="info-details-grid">
+          <div class="info-item">
+            <span class="info-label">Direct URL:</span>
+            <span id="streamUrlText" class="info-value monospace selectable">Loading…</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">Source Origin:</span>
+            <span id="streamSourceText" class="info-value">Direct Link</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Quick Shortcuts Guide -->
+      <div class="shortcuts-card">
+        <div class="shortcuts-title">⚡ KEYBOARD SHORTCUTS</div>
+        <div class="shortcuts-chips">
+          <span class="chip"><kbd>Space</kbd> Play/Pause</span>
+          <span class="chip"><kbd>←</kbd> <kbd>→</kbd> Seek 10s</span>
+          <span class="chip"><kbd>↑</kbd> <kbd>↓</kbd> Volume ±10%</span>
+          <span class="chip"><kbd>M</kbd> Mute</span>
+          <span class="chip"><kbd>F</kbd> Fullscreen</span>
+          <span class="chip"><kbd>P</kbd> PiP</span>
+          <span class="chip"><kbd>D</kbd> Download</span>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <script src="../lib/download-db.js"></script>
+  <script src="player.js"></script>
+</body>
+</html>
