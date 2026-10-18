@@ -1798,6 +1798,7 @@ function renderDownloadsUI(activeList = [], historyList = [], stats = {}) {
             <div class="dl-card-actions">
               ${!isInterrupted && item.downloadId ? `<button class="btn-dl-action folder-btn" title="Open Location (Show in folder)">📁 Open Location</button>` : ''}
               ${!isInterrupted && item.downloadId ? `<button class="btn-dl-action open-btn" title="Open downloaded file directly">▶ Open</button>` : ''}
+              ${HistoryActions.buttonsHtml(item)}
               <button class="btn-dl-action erase-btn" title="Remove from history">🗑</button>
             </div>
           </div>
@@ -1830,6 +1831,8 @@ function renderDownloadsUI(activeList = [], historyList = [], stats = {}) {
             };
           }
         }
+
+        HistoryActions.bind(card, item, refreshDownloadsList);
 
         const copyBtn = card.querySelector('.copy-path-btn');
         if (copyBtn) {
