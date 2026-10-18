@@ -7,6 +7,11 @@ let items = [];
 let activeCat = 'all';
 let pageTitleVal = '';
 let searchQuery = '';
+// Items the user ticked, by URL. Survives search / filter changes so a selection
+// can be built up across several searches.
+const selected = new Set();
+let viewList = [];
+let lastTickedIdx = -1;
 const muxJobs = {};
 let dlRefreshTimer = null;
 
@@ -95,9 +100,14 @@ function init() {
     render();
   };
 
-  $('rescan').onclick = scan;
+  $('rescan').onclick = () => scan();
   $('clearList').onclick = clearList;
   $('dlAll').onclick = triggerBulkDownloadModal;
+  $('selAll').onchange = (e) => {
+    getFilteredAndSortedItems().forEach((it) => (e.target.checked ? selected.add(it.url) : selected.delete(it.url)));
+    render();
+  };
+  $('selClear').onclick = () => { selected.clear(); render(); };
   $('filterType').onchange = render;
   $('sortBy').onchange = render;
   $('sortOrder').onchange = render;
@@ -388,9 +398,10 @@ function render() {
   
   const list = getFilteredAndSortedItems();
   
-  $('dlAll').textContent = `⬇ Download all in this view (${list.length})`;
-  $('dlAll').style.display = list.length ? '' : 'none';
-  
+  viewList = list;
+  lastTickedIdx = -1;
+  updateSelectionUi(list);
+
   if (!list.length) {
     grid.innerHTML = '<p class="empty">No matching resources found.</p>';
     return;
@@ -437,6 +448,7 @@ function card(it, idx) {
   }
 
   div.innerHTML = `
+    <input type="checkbox" class="sel-box" title="Select (Shift+click for a range)" ${selected.has(it.url) ? 'checked' : ''}>
     ${preview}
     <div class="info">
       <div class="name" title="Click to rename" data-idx="${idx}">${esc(name)}</div>
@@ -459,6 +471,22 @@ function card(it, idx) {
       <button class="btn btn-ghost copy" style="flex: initial;">Copy URL</button>
     </div>
     <div class="cstatus"></div>`;
+
+  const selBox = div.querySelector('.sel-box');
+  div.classList.toggle('selected', selected.has(it.url));
+  selBox.onclick = (e) => {
+    e.stopPropagation();
+    const here = viewList.indexOf(it);
+    const on = selBox.checked;
+    // Shift+click ticks everything between the last ticked card and this one.
+    const range = e.shiftKey && lastTickedIdx >= 0 && here >= 0
+      ? viewList.slice(Math.min(lastTickedIdx, here), Math.max(lastTickedIdx, here) + 1)
+      : [it];
+    range.forEach((x) => (on ? selected.add(x.url) : selected.delete(x.url)));
+    lastTickedIdx = here;
+    if (range.length > 1) render();
+    else { div.classList.toggle('selected', on); updateSelectionUi(); }
+  };
 
   // Parse HLS master playlists for resolution (pixels), variants, and accurate segment-summed size
   if (it.kind === 'hls' && !it._parsedHls) {
@@ -729,7 +757,20 @@ function setupBulkModal() {
   };
 }
 
+function updateSelectionUi(list = viewList) {
+  const n = selected.size;
+  const allTicked = list.length > 0 && list.every((it) => selected.has(it.url));
+  $('selAll').checked = allTicked;
+  $('selCount').textContent = `${n} selected`;
+  $('selCount').classList.toggle('hidden', !n);
+  $('selClear').classList.toggle('hidden', !n);
+  $('dlAll').textContent = n ? `⬇ Download selected (${n})` : `⬇ Download all in this view (${list.length})`;
+  $('dlAll').style.display = (n || list.length) ? '' : 'none';
+}
+
 function getVisibleList() {
+  // A ticked selection wins over the current view.
+  if (selected.size) return items.filter((it) => selected.has(it.url));
   let list = items.filter((it) => activeCat === 'all' || catOf(it) === activeCat);
   const filterVal = $('filterType').value;
   if (filterVal !== 'all') {
@@ -765,13 +806,15 @@ async function startZipBulkDownload() {
   // Fetching, packing and blob creation all happen in the offscreen document —
   // file bytes no longer cross a chrome.runtime message, which is what capped
   // this at roughly 32MB before.
-  const items = list.map((it, i) => {
+  const zipItems = list.map((it, i) => {
     const targetUrl = it.type === 'image' ? getHighResImageUrl(it.url) : it.url;
     return {
       url: targetUrl,
       name: it._customName || fileName({ ...it, url: targetUrl }, i)
     };
   });
+  const uniq = uniqueNames(zipItems.map((z) => z.name));
+  zipItems.forEach((z, i) => { z.name = uniq[i]; });
 
   const cleanTitle = (pageTitleVal || 'Media_Collection').replace(/[^a-zA-Z0-9_\-]/g, '_').slice(0, 40);
   const id = 'zip_' + Math.random().toString(36).slice(2);
@@ -784,7 +827,7 @@ async function startZipBulkDownload() {
   chrome.runtime.sendMessage({
     type: 'BUILD_ZIP',
     id,
-    items,
+    items: zipItems,
     filename: `${cleanTitle}_Media_Collection.zip`
   });
 
@@ -795,12 +838,33 @@ let bulkBusy = false;
 async function downloadAllInCatIndividual() {
   if (bulkBusy) return;
   bulkBusy = true;
-  const cards = [...document.querySelectorAll('#grid .card')];
-  for (const c of cards) {
-    c.querySelector('.dl').click();
-    await new Promise((r) => setTimeout(r, 400));
+  try {
+    // Ticked items may not be on screen (filtered out), so they cannot be
+    // started by clicking their cards; send them straight to the worker.
+    if (selected.size) {
+      const list = getVisibleList();
+      const names = uniqueNames(list.map((it, i) => it._customName || fileName({ ...it, url: it.type === 'image' ? getHighResImageUrl(it.url) : it.url }, i)));
+      for (let i = 0; i < list.length; i++) {
+        const it = list[i];
+        if (it.kind === 'subtitle') continue;
+        const url = it.type === 'image' ? getHighResImageUrl(it.url) : it.url;
+        if (it.kind === 'hls') {
+          chrome.runtime.sendMessage({ type: 'MUX_HLS', id: 'mux_' + Math.random().toString(36).slice(2), url, filename: names[i], pageUrl: pageUrlParam });
+        } else {
+          chrome.runtime.sendMessage({ type: 'DOWNLOAD_STREAM', url, filename: names[i], pageUrl: pageUrlParam, size: it.size || 0, mimeType: it.mimeType || '' });
+        }
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      return;
+    }
+    const cards = [...document.querySelectorAll('#grid .card')];
+    for (const c of cards) {
+      c.querySelector('.dl').click();
+      await new Promise((r) => setTimeout(r, 400));
+    }
+  } finally {
+    bulkBusy = false;
   }
-  bulkBusy = false;
 }
 
 // helpers

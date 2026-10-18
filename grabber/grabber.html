@@ -60,6 +60,9 @@
   <main>
     <div class="bulk" style="display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap;">
       <div style="display: flex; gap: 8px; align-items: center;">
+        <label class="sel-all" title="Select every item in the current view (after search / filter)"><input type="checkbox" id="selAll" /> Select all</label>
+        <span id="selCount" class="sel-count hidden"></span>
+        <button id="selClear" class="btn btn-ghost hidden">✕ Clear selection</button>
         <button id="dlAll" class="btn btn-primary">⬇ Download All in This View</button>
         <button id="exportTxtBtn" class="btn btn-secondary" title="Export URLs to .txt for yt-dlp, aria2c, or wget">📄 Export Links (.txt)</button>
         <button id="exportJsonBtn" class="btn btn-secondary" title="Export full metadata to .json">📋 Export (.json)</button>
