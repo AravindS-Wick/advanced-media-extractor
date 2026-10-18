@@ -439,17 +439,31 @@ async function downloadRange({ url, start, end, signal, sink, onBytes, gate }) {
   let offset = start;
   let attempt = 0;
   while (offset <= end) {
+    // Per-attempt watchdog: a throttled CDN often just stops sending on a
+    // connection. Without this the range (and so the job's tail) hangs forever.
+    const ac = new AbortController();
+    const forwardAbort = () => ac.abort();
+    signal.addEventListener('abort', forwardAbort, { once: true });
+    let stalled = false;
+    let timer = null;
+    const arm = (ms = 15000) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { stalled = true; ac.abort(); }, ms);
+    };
     try {
+      arm(20000);
       const res = await fetch(url, {
         headers: { Range: `bytes=${offset}-${end}` },
         credentials: 'include',
-        signal
+        signal: ac.signal
       });
       if (res.status !== 206) throw httpError(res.status);
 
       const reader = res.body.getReader();
       while (true) {
+        clearTimeout(timer); // not stalled while the user has paused
         await gate();
+        arm();
         const { done: rDone, value } = await reader.read();
         if (rDone) break;
         await sink.writeAt(offset, value);
@@ -463,7 +477,11 @@ async function downloadRange({ url, start, end, signal, sink, onBytes, gate }) {
       attempt++;
       if (isPermanentHttp(err, attempt) || attempt >= RANGE_MAX_ATTEMPTS) throw err;
       await waitForNetwork(signal);
-      await abortableSleep(Math.min(1000 * Math.pow(2, attempt - 1), 20000), signal);
+      // A stalled connection already cost its wait; reconnect straight away.
+      if (!stalled) await abortableSleep(Math.min(1000 * Math.pow(2, attempt - 1), 20000), signal);
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', forwardAbort);
     }
   }
 }

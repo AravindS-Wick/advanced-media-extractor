@@ -830,25 +830,56 @@ function mutateJobs(fn, skip) {
   return jobWriteChain;
 }
 
+// Progress arrives several times a second per job. Each write used to be a
+// storage read+write, a badge lookup and a wake-up of every open popup, which
+// is real overhead on top of the download itself. Keep only the newest message
+// per job and persist the batch once a second.
+const pendingProgress = new Map();
+let progressFlushTimer = null;
+const PROGRESS_FLUSH_MS = 1000;
+
 function recordJobProgress(m) {
-  return mutateJobs((jobs) => {
-    const prev = jobs[m.id] || {};
-    jobs[m.id] = {
-      ...prev,
-      id: m.id,
-      filename: m.filename || prev.filename || 'Streaming Media',
-      percent: m.percent !== undefined ? m.percent : (prev.percent || 0),
-      status: m.status || '',
-      speedMBs: m.speedMBs || 0,
-      etaSeconds: m.etaSeconds || 0,
-      paused: !!m.paused,
-      startTime: prev.startTime || Date.now(),
-      updatedAt: Date.now()
-    };
-  }, () => isPrivate(m.id));
+  pendingProgress.set(m.id, m);
+  if (!progressFlushTimer) progressFlushTimer = setTimeout(flushJobProgress, PROGRESS_FLUSH_MS);
+}
+
+function flushJobProgress() {
+  progressFlushTimer = null;
+  const batch = [...pendingProgress.values()];
+  pendingProgress.clear();
+  if (!batch.length) return;
+  // The batch is taken synchronously and queued behind earlier writes, so a
+  // drop for the same id (queued after this point) still lands after it.
+  jobWriteChain = jobWriteChain.then(async () => {
+    try {
+      const live = [];
+      for (const m of batch) if (!(await isPrivate(m.id))) live.push(m);
+      if (!live.length) return;
+      const { activeDownloadJobs } = await chrome.storage.local.get('activeDownloadJobs');
+      const jobs = activeDownloadJobs || {};
+      for (const m of live) {
+        const prev = jobs[m.id] || {};
+        jobs[m.id] = {
+          ...prev,
+          id: m.id,
+          filename: m.filename || prev.filename || 'Streaming Media',
+          percent: m.percent !== undefined ? m.percent : (prev.percent || 0),
+          status: m.status || '',
+          speedMBs: m.speedMBs || 0,
+          etaSeconds: m.etaSeconds || 0,
+          paused: !!m.paused,
+          startTime: prev.startTime || Date.now(),
+          updatedAt: Date.now()
+        };
+      }
+      await chrome.storage.local.set({ activeDownloadJobs: jobs });
+      updateJobsBadge(Object.keys(jobs).length);
+    } catch (_) {}
+  });
 }
 
 function dropJob(id) {
+  pendingProgress.delete(id);
   return mutateJobs((jobs) => { delete jobs[id]; });
 }
 
