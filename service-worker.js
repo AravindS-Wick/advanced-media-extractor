@@ -640,6 +640,7 @@ async function syncDomainAllowRules(disabledDomains) {
 // Anything started from an incognito window is never written to history or to
 // storage.local. Ids (job ids and "dl_<chromeDownloadId>") live in
 // storage.session only, so they survive worker restarts but not the browser.
+const blobSaveIds = new Set(); // 'dl_<id>' of extension-made blob saves
 const PRIVATE_IDS_KEY = 'privateIds';
 const privateIds = new Set();
 const privatePending = new Map();
@@ -791,21 +792,39 @@ async function updateDownloadHistory(entry) {
   }
 }
 
-async function updateActiveDownload(id, data) {
-  try {
-    // Synchronous on purpose: awaiting here let a late write land after the
-    // null (delete) write for the same id and leave a finished download "active".
-    if (data && privateIds.has(id)) return;
-    const res = await chrome.storage.local.get(['activeDownloads']);
-    const active = res.activeDownloads || {};
-    if (data) {
-      active[id] = { id, ...data, updatedAt: Date.now() };
-    } else {
-      delete active[id];
+// All writes to activeDownloads go through one chain, and an id that was just
+// removed ignores late updates. Without both, a slow "bytes received" handler
+// could write its snapshot back after the "complete" handler had deleted the
+// entry, leaving a finished download listed as active forever.
+let activeWriteChain = Promise.resolve();
+const recentlyFinished = new Map(); // id -> time removed
+const FINISHED_GRACE_MS = 15000;
+
+function updateActiveDownload(id, data) {
+  if (data && privateIds.has(id)) return Promise.resolve();
+  if (!data) {
+    recentlyFinished.set(id, Date.now());
+    if (recentlyFinished.size > 200) {
+      const cutoff = Date.now() - FINISHED_GRACE_MS;
+      for (const [k, t] of recentlyFinished) if (t < cutoff) recentlyFinished.delete(k);
     }
-    await chrome.storage.local.set({ activeDownloads: active });
-    chrome.runtime.sendMessage({ type: 'ACTIVE_DOWNLOADS_UPDATED', active }).catch(() => {});
-  } catch (_) {}
+  } else if (Date.now() - (recentlyFinished.get(id) || 0) < FINISHED_GRACE_MS) {
+    return Promise.resolve();
+  }
+  activeWriteChain = activeWriteChain.then(async () => {
+    try {
+      const res = await chrome.storage.local.get(['activeDownloads']);
+      const active = res.activeDownloads || {};
+      if (data) {
+        active[id] = { id, ...data, updatedAt: Date.now() };
+      } else {
+        delete active[id];
+      }
+      await chrome.storage.local.set({ activeDownloads: active });
+      chrome.runtime.sendMessage({ type: 'ACTIVE_DOWNLOADS_UPDATED', active }).catch(() => {});
+    } catch (_) {}
+  });
+  return activeWriteChain;
 }
 
 // ── Offscreen job tracking ──
@@ -836,10 +855,18 @@ function mutateJobs(fn, skip) {
 // per job and persist the batch once a second.
 const pendingProgress = new Map();
 let progressFlushTimer = null;
-const PROGRESS_FLUSH_MS = 1000;
+const PROGRESS_FLUSH_MS = 400;
+const knownJobIds = new Set();
 
 function recordJobProgress(m) {
   pendingProgress.set(m.id, m);
+  // A job's first message is written at once so its card appears immediately.
+  if (!knownJobIds.has(m.id)) {
+    knownJobIds.add(m.id);
+    clearTimeout(progressFlushTimer);
+    flushJobProgress();
+    return;
+  }
   if (!progressFlushTimer) progressFlushTimer = setTimeout(flushJobProgress, PROGRESS_FLUSH_MS);
 }
 
@@ -880,6 +907,7 @@ function flushJobProgress() {
 
 function dropJob(id) {
   pendingProgress.delete(id);
+  knownJobIds.delete(id);
   return mutateJobs((jobs) => { delete jobs[id]; });
 }
 
@@ -1206,7 +1234,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         downloadId,
         filename: message.filename,
         state: 'saving',
-        percent: 100,
+        totalBytes: message.totalBytes || 0,
+        percent: 0,
+        status: 'Saving file…',
         type: message.container || 'hls',
         startTime: Date.now()
       });
@@ -1889,7 +1919,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           dbResult.stats.totalCount = dbResult.items.length;
         }
 
-        const res = await chrome.storage.local.get(['activeDownloads', 'activeDownloadJobs']);
+        let res = await chrome.storage.local.get(['activeDownloads', 'activeDownloadJobs']);
+        // Jobs live in the offscreen document. If it is gone (crashed, or closed
+        // by Chrome) nothing is running them, so they must not be listed.
+        if (Object.keys(res.activeDownloadJobs || {}).length && !(await chrome.offscreen.hasDocument())) {
+          await recoverAfterRestart();
+          res = await chrome.storage.local.get(['activeDownloads', 'activeDownloadJobs']);
+        }
         const activeDl = res.activeDownloads || {};
         const activeJobs = res.activeDownloadJobs || {};
         const mergedActive = { ...activeDl };
@@ -1904,7 +1940,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               speedMBs: v.speedMBs || 0,
               etaSeconds: v.etaSeconds || 0,
               paused: !!v.paused,
-              type: k.startsWith('zip_') ? 'zip' : 'hls',
+              type: k.startsWith('zip_') ? 'zip' : k.startsWith('dl_') ? 'file' : 'hls',
               startTime: v.updatedAt || Date.now()
             };
           }
@@ -2106,6 +2142,10 @@ async function onDownloadFinished(downloadId) {
   if (jobId) {
     delete blobSaves[downloadId];
     await writeSession(BLOB_SAVES_KEY, blobSaves);
+    // The "Saving file…" card is keyed by the job id. Clear it here, not in a
+    // listener registered at save time: that listener dies if the worker restarts
+    // during a long save and the card would stay forever.
+    await updateActiveDownload(jobId, null);
     chrome.runtime.sendMessage({ type: 'DOWNLOAD_SAVED', id: jobId }).catch(() => {});
   }
 }
@@ -2115,6 +2155,9 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
   if (!downloadItem || !downloadItem.id) return;
   const id = 'dl_' + downloadItem.id;
   if (downloadItem.incognito || await isPrivate('url:' + downloadItem.url)) { markPrivate(id); return; }
+  // Our own save of a finished HLS/parallel job. It already has a "Saving file…"
+  // card under the job id; a second card with a blob-UUID name is the duplicate.
+  if (/^blob:/i.test(downloadItem.url || '')) { blobSaveIds.add(id); return; }
   // The privacy check above yields; a small file can finish in that gap, and
   // adding it to the active list now would leave it "downloading" forever.
   const current = await new Promise((r) => chrome.downloads.search({ id: downloadItem.id }, r));
@@ -2150,10 +2193,24 @@ chrome.downloads.onChanged.addListener((delta) => {
   chrome.storage.local.get(['activeDownloads'], async (res) => {
     const active = res.activeDownloads || {};
     if (await isPrivate(id)) return;
-    if (!active[id]) {
+    if (!active[id] && !blobSaveIds.has(id)) {
       // Not seen via onCreated (worker restarted): ask Chrome whether it is incognito.
       const found = await new Promise((r) => chrome.downloads.search({ id: delta.id }, r));
       if (found && found[0] && found[0].incognito) { markPrivate(id); return; }
+      if (found && found[0] && /^blob:/i.test(found[0].url || '')) blobSaveIds.add(id);
+    }
+    if (blobSaveIds.has(id)) {
+      // Show the save's progress on the job's own card instead of a second one.
+      const jobId = (await readSession(BLOB_SAVES_KEY))[delta.id];
+      const finished = delta.state && (delta.state.current === 'complete' || delta.state.current === 'interrupted');
+      if (!finished) {
+        if (jobId && delta.bytesReceived) {
+          const cur = (await chrome.storage.local.get('activeDownloads')).activeDownloads || {};
+          const card = cur[jobId];
+          if (card && card.totalBytes) await updateActiveDownload(jobId, { ...card, percent: Math.min(100, Math.round((delta.bytesReceived.current / card.totalBytes) * 100)) });
+        }
+        return;
+      }
     }
     const item = active[id] || {
       id,
