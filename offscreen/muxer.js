@@ -131,8 +131,14 @@ function acquireSlot(job) {
     job.slotHeld = true;
     return Promise.resolve();
   }
-  progress(job.id, { filename: job.filename, percent: 0, status: 'Queued' });
-  return new Promise((resolve, reject) => slotQueue.push({ job, resolve, reject }));
+  progress(job.id, { ...(job.last || {}), filename: job.filename, percent: (job.last && job.last.percent) || 0, status: 'Queued' }, true);
+  return new Promise((resolve, reject) => {
+    const entry = { job, resolve, reject };
+    // A job paused before it ever got a slot waits outside the queue, so it
+    // cannot start (and hold a slot) while paused.
+    if (job.paused) job.parkedEntry = entry;
+    else slotQueue.push(entry);
+  });
 }
 
 // Hand free slots to waiting jobs, never beyond the current limit. Checking the
@@ -164,6 +170,12 @@ function setMaxJobs(n) {
 function dropQueued(id) {
   const i = slotQueue.findIndex((q) => q.job.id === id);
   if (i >= 0) slotQueue.splice(i, 1)[0].reject(new Error('Cancelled by user'));
+  const job = activeJobs.get(id);
+  if (job && job.parkedEntry) {
+    const entry = job.parkedEntry;
+    job.parkedEntry = null;
+    entry.reject(new Error('Cancelled by user'));
+  }
 }
 
 chrome.runtime.onMessage.addListener((msg) => {
@@ -246,7 +258,8 @@ function progress(id, progressPayload, force = false) {
 async function waitIfPaused(id) {
   for (;;) {
     const job = activeJobs.get(id);
-    if (!job || !job.paused || job.abortController.signal.aborted) return;
+    // Held until the job is resumed AND has a download slot again.
+    if (!job || job.abortController.signal.aborted || (!job.paused && job.slotHeld)) return;
     await new Promise((resolve) => { (job.waiters = job.waiters || []).push(resolve); });
   }
 }
@@ -255,11 +268,26 @@ function wakeWaiters(job) {
   if (job && job.waiters) job.waiters.splice(0).forEach((r) => r());
 }
 
+// A paused download gives its slot back so the next queued one can start;
+// resuming takes a slot again, or waits as "Queued" if they are all busy.
 function setPaused(id, paused) {
   const job = activeJobs.get(id);
-  if (!job) return;
+  if (!job || job.paused === paused) return;
   job.paused = paused;
-  if (!paused) wakeWaiters(job);
+  if (paused) {
+    // Still waiting for its first slot: take it out of the queue until resumed.
+    const i = slotQueue.findIndex((q) => q.job === job);
+    if (i >= 0) job.parkedEntry = slotQueue.splice(i, 1)[0];
+    releaseJobSlot(job);
+  } else if (job.parkedEntry) {
+    slotQueue.push(job.parkedEntry);
+    job.parkedEntry = null;
+    drainQueue();
+  } else if (!job.slotHeld) {
+    acquireSlot(job).then(() => wakeWaiters(job)).catch(() => {});
+  } else {
+    wakeWaiters(job);
+  }
   progress(id, job.last || { filename: job.filename, percent: 0 }, true);
 }
 

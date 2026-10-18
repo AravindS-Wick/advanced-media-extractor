@@ -793,7 +793,9 @@ async function updateDownloadHistory(entry) {
 
 async function updateActiveDownload(id, data) {
   try {
-    if (data && await isPrivate(id)) return;
+    // Synchronous on purpose: awaiting here let a late write land after the
+    // null (delete) write for the same id and leave a finished download "active".
+    if (data && privateIds.has(id)) return;
     const res = await chrome.storage.local.get(['activeDownloads']);
     const active = res.activeDownloads || {};
     if (data) {
@@ -811,9 +813,13 @@ async function updateActiveDownload(id, data) {
 // chrome.storage. Its MUX_PROGRESS broadcasts are mirrored here so the Downloads
 // list (popup, grabber, any tab) can read them from one place.
 let jobWriteChain = Promise.resolve();
-function mutateJobs(fn) {
+function mutateJobs(fn, skip) {
   jobWriteChain = jobWriteChain.then(async () => {
     try {
+      // The privacy check runs inside the chain: awaiting it before enqueueing let
+      // a late progress write land after dropJob and resurrect a finished or
+      // cancelled job as "downloading"/"queued".
+      if (skip && await skip()) return;
       const { activeDownloadJobs } = await chrome.storage.local.get('activeDownloadJobs');
       const jobs = activeDownloadJobs || {};
       fn(jobs);
@@ -824,8 +830,7 @@ function mutateJobs(fn) {
   return jobWriteChain;
 }
 
-async function recordJobProgress(m) {
-  if (await isPrivate(m.id)) return;
+function recordJobProgress(m) {
   return mutateJobs((jobs) => {
     const prev = jobs[m.id] || {};
     jobs[m.id] = {
@@ -840,7 +845,7 @@ async function recordJobProgress(m) {
       startTime: prev.startTime || Date.now(),
       updatedAt: Date.now()
     };
-  });
+  }, () => isPrivate(m.id));
 }
 
 function dropJob(id) {
@@ -2039,6 +2044,10 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
   if (!downloadItem || !downloadItem.id) return;
   const id = 'dl_' + downloadItem.id;
   if (downloadItem.incognito || await isPrivate('url:' + downloadItem.url)) { markPrivate(id); return; }
+  // The privacy check above yields; a small file can finish in that gap, and
+  // adding it to the active list now would leave it "downloading" forever.
+  const current = await new Promise((r) => chrome.downloads.search({ id: downloadItem.id }, r));
+  if (current && current[0] && current[0].state !== 'in_progress') return;
   if (downloadItem.referrer) saveJobSource(id, { url: downloadItem.url, pageUrl: downloadItem.referrer, kind: 'file' });
   const rawName = downloadItem.filename ? downloadItem.filename.split(/[\\/]/).pop() : (downloadItem.url ? downloadItem.url.split('/').pop().split('?')[0] : 'download');
   const type = EXT_VIDEO.test(rawName) ? 'video' : EXT_AUDIO.test(rawName) ? 'audio' : EXT_DOC.test(rawName) ? 'doc' : 'file';
