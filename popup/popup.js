@@ -2550,6 +2550,13 @@ function setupDownloadsSync(refresh) {
     if (typeof scanCurrentPage === 'function' && activeTabId) scanCurrentPage(false, true);
   });
   chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'session') {
+      // Private (incognito) downloads live in session storage.
+      if (changes.activeDownloadJobs || changes.activeDownloads || changes.privateHistory) {
+        if (!t) t = setTimeout(() => { t = null; refresh(); }, 250);
+      }
+      return;
+    }
     if (area !== 'local') return;
     if (changes.maxConcurrentJobs) syncSelect(changes.maxConcurrentJobs.newValue);
     if (changes.adBlockEnabled || changes.adBlockDisabledDomains) {

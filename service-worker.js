@@ -761,7 +761,15 @@ async function getJobSource(...keys) {
 
 async function updateDownloadHistory(entry) {
   try {
-    if (await isPrivate(entry.id, entry.downloadId && 'dl_' + entry.downloadId, entry.url && 'url:' + entry.url)) return;
+    if (await isPrivate(entry.id, entry.downloadId && 'dl_' + entry.downloadId, entry.url && 'url:' + entry.url)) {
+      // Kept for this browser session only so the user still sees it finish.
+      const r = await chrome.storage.session.get('privateHistory');
+      const list = (r.privateHistory || []).filter((h) => h.id !== entry.id);
+      list.unshift({ ...entry, private: true, completedAt: entry.completedAt || Date.now() });
+      await chrome.storage.session.set({ privateHistory: list.slice(0, 50) });
+      chrome.runtime.sendMessage({ type: 'DOWNLOAD_HISTORY_UPDATED' }).catch(() => {});
+      return;
+    }
     const src = await getJobSource(entry.id, entry.downloadId && 'dl_' + entry.downloadId);
     if (src) {
       entry = {
@@ -801,7 +809,6 @@ const recentlyFinished = new Map(); // id -> time removed
 const FINISHED_GRACE_MS = 15000;
 
 function updateActiveDownload(id, data) {
-  if (data && privateIds.has(id)) return Promise.resolve();
   if (!data) {
     recentlyFinished.set(id, Date.now());
     if (recentlyFinished.size > 200) {
@@ -813,14 +820,17 @@ function updateActiveDownload(id, data) {
   }
   activeWriteChain = activeWriteChain.then(async () => {
     try {
-      const res = await chrome.storage.local.get(['activeDownloads']);
+      // Private (incognito) downloads still show while running, but only in
+      // storage.session, which is never written to disk and clears with the browser.
+      const area = privateIds.has(id) ? chrome.storage.session : chrome.storage.local;
+      const res = await area.get(['activeDownloads']);
       const active = res.activeDownloads || {};
       if (data) {
-        active[id] = { id, ...data, updatedAt: Date.now() };
+        active[id] = { id, ...data, updatedAt: Date.now(), ...(privateIds.has(id) ? { private: true } : {}) };
       } else {
         delete active[id];
       }
-      await chrome.storage.local.set({ activeDownloads: active });
+      await area.set({ activeDownloads: active });
       chrome.runtime.sendMessage({ type: 'ACTIVE_DOWNLOADS_UPDATED', active }).catch(() => {});
     } catch (_) {}
   });
@@ -884,8 +894,19 @@ function flushJobProgress() {
   // drop for the same id (queued after this point) still lands after it.
   jobWriteChain = jobWriteChain.then(async () => {
     try {
-      const live = [];
-      for (const m of batch) if (!(await isPrivate(m.id))) live.push(m);
+      const pub = [];
+      const priv = [];
+      for (const m of batch) ((await isPrivate(m.id)) ? priv : pub).push(m);
+      if (priv.length) {
+        const r = await chrome.storage.session.get('activeDownloadJobs');
+        const pj = r.activeDownloadJobs || {};
+        for (const m of priv) {
+          const prev = pj[m.id] || {};
+          pj[m.id] = { ...prev, id: m.id, filename: m.filename || prev.filename || 'Streaming Media', percent: m.percent !== undefined ? m.percent : (prev.percent || 0), status: m.status || '', speedMBs: m.speedMBs || 0, etaSeconds: m.etaSeconds || 0, paused: !!m.paused, private: true, startTime: prev.startTime || Date.now(), updatedAt: Date.now() };
+        }
+        await chrome.storage.session.set({ activeDownloadJobs: pj });
+      }
+      const live = pub;
       if (!live.length) return;
       const { activeDownloadJobs } = await chrome.storage.local.get('activeDownloadJobs');
       const jobs = activeDownloadJobs || {};
@@ -918,7 +939,11 @@ function dropJob(id) {
   }
   pendingProgress.delete(id);
   knownJobIds.delete(id);
-  return mutateJobs((jobs) => { delete jobs[id]; });
+  const dropPrivate = chrome.storage.session.get('activeDownloadJobs').then((r) => {
+    const pj = r.activeDownloadJobs || {};
+    if (id in pj) { delete pj[id]; return chrome.storage.session.set({ activeDownloadJobs: pj }); }
+  }).catch(() => {});
+  return Promise.all([dropPrivate, mutateJobs((jobs) => { delete jobs[id]; })]);
 }
 
 // Toolbar badge: how many background jobs are running, whichever tab is open.
@@ -1937,8 +1962,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           await recoverAfterRestart();
           res = await chrome.storage.local.get(['activeDownloads', 'activeDownloadJobs']);
         }
-        const activeDl = res.activeDownloads || {};
-        const activeJobs = res.activeDownloadJobs || {};
+        const priv = await chrome.storage.session.get(['activeDownloads', 'activeDownloadJobs', 'privateHistory']);
+        if (Object.keys(priv.activeDownloadJobs || {}).length && !(await chrome.offscreen.hasDocument())) {
+          priv.activeDownloadJobs = {};
+          await chrome.storage.session.set({ activeDownloadJobs: {} });
+        }
+        const activeDl = { ...(res.activeDownloads || {}), ...(priv.activeDownloads || {}) };
+        const activeJobs = { ...(res.activeDownloadJobs || {}), ...(priv.activeDownloadJobs || {}) };
         const mergedActive = { ...activeDl };
 
         for (const [k, v] of Object.entries(activeJobs)) {
@@ -1960,7 +1990,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({
           ok: true,
           active: Object.values(mergedActive),
-          history: dbResult.items || [],
+          history: [
+            ...((offset === 0 && !query ? (priv.privateHistory || []) : [])),
+            ...(dbResult.items || [])
+          ],
           stats: dbResult.stats || { totalCount: 0, totalBytes: 0 }
         });
       } catch (err) {
@@ -2165,7 +2198,7 @@ async function onDownloadFinished(downloadId) {
 chrome.downloads.onCreated.addListener(async (downloadItem) => {
   if (!downloadItem || !downloadItem.id) return;
   const id = 'dl_' + downloadItem.id;
-  if (downloadItem.incognito || await isPrivate('url:' + downloadItem.url)) { markPrivate(id); return; }
+  if (downloadItem.incognito || await isPrivate('url:' + downloadItem.url)) markPrivate(id);
   // Our own save of a finished HLS/parallel job. It already has a "Saving file…"
   // card under the job id; a second card with a blob-UUID name is the duplicate.
   if (/^blob:/i.test(downloadItem.url || '')) { blobSaveIds.add(id); return; }
@@ -2202,12 +2235,15 @@ chrome.downloads.onChanged.addListener((delta) => {
   if (!delta || !delta.id) return;
   const id = 'dl_' + delta.id;
   chrome.storage.local.get(['activeDownloads'], async (res) => {
-    const active = res.activeDownloads || {};
-    if (await isPrivate(id)) return;
+    let active = res.activeDownloads || {};
+    if (await isPrivate(id)) active = (await chrome.storage.session.get('activeDownloads')).activeDownloads || {};
     if (!active[id] && !blobSaveIds.has(id)) {
       // Not seen via onCreated (worker restarted): ask Chrome whether it is incognito.
       const found = await new Promise((r) => chrome.downloads.search({ id: delta.id }, r));
-      if (found && found[0] && found[0].incognito) { markPrivate(id); return; }
+      if (found && found[0] && found[0].incognito) {
+        markPrivate(id);
+        active = (await chrome.storage.session.get('activeDownloads')).activeDownloads || {};
+      }
       if (found && found[0] && /^blob:/i.test(found[0].url || '')) blobSaveIds.add(id);
     }
     if (blobSaveIds.has(id)) {
@@ -2216,7 +2252,8 @@ chrome.downloads.onChanged.addListener((delta) => {
       const finished = delta.state && (delta.state.current === 'complete' || delta.state.current === 'interrupted');
       if (!finished) {
         if (jobId && delta.bytesReceived) {
-          const cur = (await chrome.storage.local.get('activeDownloads')).activeDownloads || {};
+          const area = privateIds.has(jobId) ? chrome.storage.session : chrome.storage.local;
+          const cur = (await area.get('activeDownloads')).activeDownloads || {};
           const card = cur[jobId];
           if (card && card.totalBytes) await updateActiveDownload(jobId, { ...card, percent: Math.min(100, Math.round((delta.bytesReceived.current / card.totalBytes) * 100)) });
         }

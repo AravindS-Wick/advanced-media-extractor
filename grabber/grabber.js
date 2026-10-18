@@ -1989,6 +1989,13 @@ function setupDownloadsSync(refresh) {
     liveScanTimer = setTimeout(() => { if ($('downloadsView').classList.contains('hidden')) scan(true); }, 1500);
   });
   chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'session') {
+      // Private (incognito) downloads live in session storage.
+      if (changes.activeDownloadJobs || changes.activeDownloads || changes.privateHistory) {
+        if (!t) t = setTimeout(() => { t = null; refresh(); }, 250);
+      }
+      return;
+    }
     if (area !== 'local') return;
     if (changes.maxConcurrentJobs) syncSelect(changes.maxConcurrentJobs.newValue);
     if (changes.activeDownloadJobs || changes.activeDownloads || changes.downloadHistory) {
