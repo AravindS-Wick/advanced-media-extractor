@@ -163,7 +163,11 @@ function scrapeDOM() {
 
   // Scan all page script elements and innerHTML for media URLs
   try {
-    const pageHtml = document.documentElement.innerHTML;
+    // Unescape JSON-encoded URLs ("https:\/\/..." / /) so they can match.
+    const pageHtml = document.documentElement.innerHTML
+      .replace(/\\u002F/gi, '/')
+      .replace(/\\\//g, '/')
+      .replace(/&amp;/g, '&');
     const absUrlRegex = /(https?:\/\/[^\s"'`<>]+?\.(?:mp4|webm|m4v|mkv|mov|flv|avi|mp3|m4a|aac|ogg|opus|wav|flac|pdf|docx?|pptx?|xlsx?|epub|rtf|csv|zip|rar|7z|apk|torrent|m3u8|mpd)(?:\?[^\s"'`<>]*)?)/gi;
     let m;
     while ((m = absUrlRegex.exec(pageHtml)) !== null) {
