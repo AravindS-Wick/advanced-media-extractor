@@ -105,7 +105,7 @@ document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
   // Load settings from storage
-  const stored = await chrome.storage.local.get(['backendUrl', 'apiKey', 'engineModel', 'confirmName', 'mediaSortPreference', 'downloadSubfolder']);
+  const stored = await chrome.storage.local.get(['backendUrl', 'apiKey', 'engineModel', 'confirmName', 'mediaSortPreference', 'downloadSubfolder', 'historyRetentionDays']);
   if (stored.backendUrl) SERVER = stored.backendUrl;
   if (stored.apiKey) API_KEY = stored.apiKey;
   if (stored.engineModel) ENGINE_MODEL = stored.engineModel;
@@ -119,6 +119,7 @@ async function init() {
   $('engineModelSelect').value = ENGINE_MODEL;
   $('confirmNameToggle').checked = CONFIRM_NAME;
   if ($('downloadFolderInput')) $('downloadFolderInput').value = stored.downloadSubfolder || '';
+  if ($('historyRetentionSetting')) $('historyRetentionSetting').value = String(stored.historyRetentionDays || 0);
 
   setupNavTabs();
   setupSettingsHandlers();
@@ -2064,6 +2065,7 @@ function setupSettingsHandlers() {
 
     chrome.runtime.sendMessage({ type: 'SET_MAX_JOBS', value: parseInt($('maxJobsSetting').value, 10) });
     chrome.runtime.sendMessage({ type: 'SET_CONNECTIONS', value: parseInt($('connectionsSetting').value, 10) });
+    chrome.runtime.sendMessage({ type: 'SET_HISTORY_RETENTION', days: parseInt($('historyRetentionSetting').value, 10) });
 
     await chrome.storage.local.set({
       backendUrl: SERVER,
