@@ -1011,6 +1011,26 @@ async function installJobHeaderRule(jobId, mediaUrl, pageUrl) {
   }
 }
 
+// Files at least this big are fetched with several connections at once.
+const PARALLEL_MIN_BYTES = 24 * 1024 * 1024;
+
+// Total size when the server honours ranges (only then can pieces be fetched in
+// parallel); 0 when unknown, so the caller falls back to a normal download.
+async function probeRangedSize(url) {
+  try {
+    const r = await fetch(url, {
+      headers: { Range: 'bytes=0-0' },
+      credentials: 'include',
+      signal: AbortSignal.timeout(5000)
+    });
+    if (r.status !== 206) return 0;
+    const m = (r.headers.get('content-range') || '').match(/\/(\d+)\s*$/);
+    return m ? parseInt(m[1], 10) : 0;
+  } catch (_) {
+    return 0;
+  }
+}
+
 const JOB_START_TYPES = new Set(['MUX_HLS', 'DOWNLOAD_PARALLEL', 'DOWNLOAD_STREAM', 'BUILD_ZIP']);
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -1604,97 +1624,117 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       safeDirectName += isAud ? '.mp3' : isImg ? '.jpg' : isDoc ? '.pdf' : '.mp4';
     }
 
-    // Derive Referer/Origin from the page the media was found on
-    const { referer, origin } = deriveReferer(pageUrl, url);
+    // chrome.downloads is a single connection, and CDNs commonly cap one
+    // connection to a fraction of the line speed (a 1 GB file at under 1 MB/s).
+    // Large files that support ranges go to the multi-connection engine instead.
+    const startNative = () => {
+      // Derive Referer/Origin from the page the media was found on
+      const { referer, origin } = deriveReferer(pageUrl, url);
 
-    // Register a temporary declarativeNetRequest rule to inject Referer & Origin headers
-    const ruleId = nextHeaderRuleId();
-    let urlHost = '';
-    try {
-      urlHost = new URL(url).hostname;
-    } catch (_) {}
+      // Register a temporary declarativeNetRequest rule to inject Referer & Origin headers
+      const ruleId = nextHeaderRuleId();
+      let urlHost = '';
+      try {
+        urlHost = new URL(url).hostname;
+      } catch (_) {}
 
-    if (urlHost) {
-      const isInsta = urlHost.includes('cdninstagram.com') || urlHost.includes('fbcdn.net') || (pageUrl && pageUrl.includes('instagram.com'));
-      const isYt = urlHost.includes('googlevideo.com') || urlHost.includes('youtube.com') || (pageUrl && pageUrl.includes('youtube.com'));
+      if (urlHost) {
+        const isInsta = urlHost.includes('cdninstagram.com') || urlHost.includes('fbcdn.net') || (pageUrl && pageUrl.includes('instagram.com'));
+        const isYt = urlHost.includes('googlevideo.com') || urlHost.includes('youtube.com') || (pageUrl && pageUrl.includes('youtube.com'));
 
-      const effectiveReferer = isInsta ? 'https://www.instagram.com/' : isYt ? 'https://www.youtube.com/' : (referer || `https://${urlHost}/`);
-      const effectiveOrigin = isInsta ? 'https://www.instagram.com' : isYt ? 'https://www.youtube.com' : (origin || `https://${urlHost}`);
+        const effectiveReferer = isInsta ? 'https://www.instagram.com/' : isYt ? 'https://www.youtube.com/' : (referer || `https://${urlHost}/`);
+        const effectiveOrigin = isInsta ? 'https://www.instagram.com' : isYt ? 'https://www.youtube.com' : (origin || `https://${urlHost}`);
 
-      const requestDomains = [urlHost];
-      if (isInsta) {
-        requestDomains.push('cdninstagram.com', 'fbcdn.net', 'instagram.com');
-      }
-      if (isYt) {
-        requestDomains.push('googlevideo.com', 'youtube.com');
-      }
-
-      const rule = {
-        id: ruleId,
-        priority: 99,
-        action: {
-          type: 'modifyHeaders',
-          requestHeaders: [
-            { header: 'Referer', operation: 'set', value: effectiveReferer },
-            { header: 'Origin', operation: 'set', value: effectiveOrigin },
-            { header: 'Sec-Fetch-Site', operation: 'set', value: 'same-origin' },
-            { header: 'Sec-Fetch-Mode', operation: 'set', value: 'no-cors' }
-          ]
-        },
-        condition: {
-          requestDomains,
-          resourceTypes: ['main_frame', 'sub_frame', 'xmlhttprequest', 'media', 'other']
+        const requestDomains = [urlHost];
+        if (isInsta) {
+          requestDomains.push('cdninstagram.com', 'fbcdn.net', 'instagram.com');
         }
-      };
+        if (isYt) {
+          requestDomains.push('googlevideo.com', 'youtube.com');
+        }
 
-      chrome.declarativeNetRequest.updateDynamicRules({
-        addRules: [rule],
-        removeRuleIds: [ruleId]
-      }).then(() => {
-        triggerDownload();
-      }).catch(err => {
-        console.error('Failed to set headers rule:', err);
-        triggerDownload();
-      });
-    } else {
-      triggerDownload();
-    }
+        const rule = {
+          id: ruleId,
+          priority: 99,
+          action: {
+            type: 'modifyHeaders',
+            requestHeaders: [
+              { header: 'Referer', operation: 'set', value: effectiveReferer },
+              { header: 'Origin', operation: 'set', value: effectiveOrigin },
+              { header: 'Sec-Fetch-Site', operation: 'set', value: 'same-origin' },
+              { header: 'Sec-Fetch-Mode', operation: 'set', value: 'no-cors' }
+            ]
+          },
+          condition: {
+            requestDomains,
+            resourceTypes: ['main_frame', 'sub_frame', 'xmlhttprequest', 'media', 'other']
+          }
+        };
 
-    // The rule must outlive the first request: Chrome re-requests the file with
-    // the same headers when it resumes an interrupted download. It is released
-    // by the chrome.downloads.onChanged handler once the download finishes.
-    function triggerDownload() {
-      trackPrivateJob('url:' + url, sender);
-      withDownloadFolder(safeDirectName || 'media.mp4').then(async (targetFilename) => {
-        await isPrivate('url:' + url);
-        chrome.downloads.download({
-          url,
-          filename: targetFilename,
-          saveAs: false
-        }, (downloadId) => {
-          const startError = chrome.runtime.lastError && chrome.runtime.lastError.message;
-          if (!startError && downloadId !== undefined) {
-            isPrivate('url:' + url).then((priv) => {
-              if (priv) markPrivate('dl_' + downloadId);
-              else saveJobSource('dl_' + downloadId, { url, pageUrl, kind: 'file' });
-            });
-          }
-          if (urlHost) {
-            if (startError || downloadId === undefined) {
-              chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [ruleId] }).catch(() => {});
-            } else {
-              holdHeaderRule('dl:' + downloadId, ruleId);
-            }
-          }
-
-          if (startError) {
-            sendResponse({ ok: false, error: startError });
-          } else {
-            sendResponse({ ok: true, downloadId });
-          }
+        chrome.declarativeNetRequest.updateDynamicRules({
+          addRules: [rule],
+          removeRuleIds: [ruleId]
+        }).then(() => {
+          triggerDownload();
+        }).catch(err => {
+          console.error('Failed to set headers rule:', err);
+          triggerDownload();
         });
-      });
-    }
+      } else {
+        triggerDownload();
+      }
+
+      // The rule must outlive the first request: Chrome re-requests the file with
+      // the same headers when it resumes an interrupted download. It is released
+      // by the chrome.downloads.onChanged handler once the download finishes.
+      function triggerDownload() {
+        trackPrivateJob('url:' + url, sender);
+        withDownloadFolder(safeDirectName || 'media.mp4').then(async (targetFilename) => {
+          await isPrivate('url:' + url);
+          chrome.downloads.download({
+            url,
+            filename: targetFilename,
+            saveAs: false
+          }, (downloadId) => {
+            const startError = chrome.runtime.lastError && chrome.runtime.lastError.message;
+            if (!startError && downloadId !== undefined) {
+              isPrivate('url:' + url).then((priv) => {
+                if (priv) markPrivate('dl_' + downloadId);
+                else saveJobSource('dl_' + downloadId, { url, pageUrl, kind: 'file' });
+              });
+            }
+            if (urlHost) {
+              if (startError || downloadId === undefined) {
+                chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [ruleId] }).catch(() => {});
+              } else {
+                holdHeaderRule('dl:' + downloadId, ruleId);
+              }
+            }
+
+            if (startError) {
+              sendResponse({ ok: false, error: startError });
+            } else {
+              sendResponse({ ok: true, downloadId });
+            }
+          });
+        });
+      }
+    };
+
+    const knownSize = Number(message.size) || 0;
+    (knownSize ? Promise.resolve(knownSize) : probeRangedSize(url)).then((size) => {
+      if (size >= PARALLEL_MIN_BYTES && !message.forceNative) {
+        const id = 'dl_' + Math.random().toString(36).slice(2);
+        trackPrivateJob(id, sender);
+        saveJobSource(id, { url, pageUrl, kind: 'file' });
+        installJobHeaderRule(id, url, pageUrl)
+          .then(() => dispatchToOffscreen({ type: 'DO_PARALLEL', id, url, filename: safeDirectName }))
+          .catch((err) => chrome.runtime.sendMessage({ type: 'MUX_DONE', id, error: err.message }));
+        sendResponse({ ok: true, routed: true, id });
+      } else {
+        startNative();
+      }
+    });
 
     return true;
   }

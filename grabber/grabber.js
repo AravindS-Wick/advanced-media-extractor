@@ -629,9 +629,10 @@ function download(it, btn, statusEl, customFilename) {
     url: it.url,
     filename: filename,
     pageUrl: pageUrlParam,
+    size: it.size || it.estimatedBytes || 0,
     mimeType: it.mimeType || ''
   }, (res) => {
-    if (res && res.isHls && res.id) {
+    if (res && (res.isHls || res.routed) && res.id) {
       muxJobs[res.id] = { btn, setMsg };
       setMsg('Fetching 0%…', true);
       if (btn) btn.textContent = 'Fetching 0%…';
@@ -835,6 +836,35 @@ function cleanStringForFilename(str) {
     .slice(0, 100);
 }
 
+// "https://cdn.site/ch12/001.png?x=1" -> "001.png". Empty when the URL has no
+// usable file name, so the caller can fall back to a generated one.
+function originalImageName(url, defaultExt) {
+  try {
+    let base = decodeURIComponent(new URL(url).pathname.split('/').pop() || '');
+    base = base.replace(/[\\/:*?"<>|]+/g, '_').trim();
+    if (!base || base === '_') return '';
+    const m = base.match(/\.([a-z0-9]{2,5})$/i);
+    if (m && !/^(jpe?g|png|webp|gif|avif|bmp|svg|ico|tiff?)$/i.test(m[1])) return ''; // .php/.aspx/... is not a file name
+    return m ? base : `${base}.${defaultExt}`;
+  } catch (_) {
+    return '';
+  }
+}
+
+// Same name twice in one batch (two chapters both have 001.png) would overwrite
+// or collide inside a ZIP; number the later ones.
+function uniqueNames(names) {
+  const seen = new Map();
+  return names.map((n) => {
+    const k = n.toLowerCase();
+    const count = seen.get(k) || 0;
+    seen.set(k, count + 1);
+    if (!count) return n;
+    const dot = n.lastIndexOf('.');
+    return dot > 0 ? `${n.slice(0, dot)}_${count + 1}${n.slice(dot)}` : `${n}_${count + 1}`;
+  });
+}
+
 function fileName(it, index = 0) {
   const isAudio = it.type === 'audio' || it.isAudio || /(\.mp3|\.m4a|\.aac|\.wav|\.ogg|\.flac)/i.test(it.url) || (/audio/i.test(it.url) && !/video/i.test(it.url));
   const isVideo = !isAudio && (it.kind === 'hls' || it.kind === 'dash' || it.isVideo || it.type === 'video' || /(\.m3u8|\.mpd|\.mp4|\.webm|\.mkv|\.mov)/i.test(it.url));
@@ -857,6 +887,14 @@ function fileName(it, index = 0) {
       custom += `.${e}`;
     }
     return custom;
+  }
+
+  // Images keep the name the site gave them (001.png, 002.png, ...): comic and
+  // manga pages are numbered, and renaming them to the page title destroys
+  // the reading order.
+  if (isImage) {
+    const original = originalImageName(it.url, e);
+    if (original) return original;
   }
 
   // 1. Try item metadata title if present
