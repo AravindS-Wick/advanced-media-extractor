@@ -132,7 +132,15 @@
     </div>
 
     <!-- Active Tasks Section -->
-    <div class="dl-section-label">Active Downloads (<span id="activeDlCount">0</span>)</div>
+    <div class="dl-section-label">Active Downloads (<span id="activeDlCount">0</span>)
+      <label class="dl-max-wrap" title="How many downloads run at once. The rest wait in the queue.">
+        Max at once
+        <select id="maxJobsSelect" class="dl-max-select">
+          <option>1</option><option>2</option><option>3</option><option>4</option><option>5</option>
+          <option>6</option><option>8</option><option>10</option>
+        </select>
+      </label>
+    </div>
     <div id="activeDownloadsList" class="downloads-list-group">
       <div class="empty-dl-sub">No downloads currently in progress.</div>
     </div>
@@ -319,6 +327,25 @@
       <div class="form-group flex-row">
         <input type="checkbox" id="confirmNameToggle" />
         <label for="confirmNameToggle" class="mb-0">Confirm / prompt filename before saving</label>
+      </div>
+
+      <!-- Download queue length -->
+      <div class="form-group">
+        <label for="maxJobsSetting">Max simultaneous downloads:</label>
+        <select id="maxJobsSetting" class="form-input">
+          <option>1</option><option>2</option><option>3</option><option>4</option><option>5</option>
+          <option>6</option><option>8</option><option>10</option>
+        </select>
+        <p class="field-help">Streaming downloads beyond this wait in the queue. Also adjustable in the Downloads tab.</p>
+      </div>
+
+      <!-- Connections per download -->
+      <div class="form-group">
+        <label for="connectionsSetting">Connections per download:</label>
+        <select id="connectionsSetting" class="form-input">
+          <option>4</option><option>8</option><option>12</option><option>16</option><option>24</option><option>32</option>
+        </select>
+        <p class="field-help">More connections = faster on slow or throttled servers. Some sites rate-limit or block very high values; lower it if downloads start failing.</p>
       </div>
 
       <button id="saveSettingsBtn" class="btn-primary btn-block">Save Settings</button>

@@ -1,8 +1,46 @@
 // Service worker: bridges content scripts <-> DevTools panels
 importScripts('lib/download-db.js');
 
-// Store media found per tab
+// Store media found per tab.
+// MV3 service workers are killed after ~30s idle, which wipes anything held only
+// in memory while the toolbar badge (kept by the browser) still shows the old
+// count — the "badge says 15, popup is empty" bug. Mirror the store into
+// chrome.storage.session (survives worker restarts, cleared on browser exit) and
+// hydrate it back on startup. Handlers that read the store await `storeReady`.
 const tabMediaStore = {};
+const MAX_STREAMS_PER_TAB = 500;
+let persistTimer = null;
+
+function persistTabMediaStore() {
+  if (persistTimer) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    try {
+      chrome.storage.session.set({ tabMediaStore }).catch(() => {});
+    } catch (_) {}
+  }, 400);
+}
+
+const storeReady = (async () => {
+  try {
+    const { tabMediaStore: saved } = await chrome.storage.session.get('tabMediaStore');
+    if (!saved || typeof saved !== 'object') return;
+    for (const [tabId, entry] of Object.entries(saved)) {
+      const live = tabMediaStore[tabId];
+      if (!live) {
+        tabMediaStore[tabId] = entry;
+        continue;
+      }
+      // Requests sniffed while hydrating win; add back anything persisted earlier.
+      const liveUrls = new Set(live.streams.map((s) => s.url));
+      const older = (entry.streams || []).filter((s) => !liveUrls.has(s.url));
+      live.streams = [...older, ...live.streams];
+      live.title = live.title || entry.title || '';
+      live.url = live.url || entry.url || '';
+      live.poster = live.poster || entry.poster || '';
+    }
+  } catch (_) {}
+})();
 
 // ── Universal network sniffer (1DM-style): catch downloadable resources on ANY
 // site/iframe by watching response content-types and URL extensions. Observational
@@ -42,9 +80,35 @@ function withDownloadFolder(filename) {
   });
 }
 
-function classifyResource(url, contentType = '') {
-  const ct = (contentType || '').toLowerCase();
+const EXT_IMAGE = /\.(jpe?g|png|gif|webp|bmp|svg|avif|ico)$/i;
+// HLS/DASH/CMAF fragments — thousands per playback, never useful as a download.
+const SEGMENT_URL = /\.(m4s|ts|cmfv|cmfa|m4f)(\?|#|$)|\/frag\(\d+\)|[\/_\-.](seg|segment|chunk|frag|fragment)[-_]?\d+[^\/]*$|[?&](seg|segment|chunk|frag|fragment|sq)=\d+/i;
+const SEGMENT_CT = /^(video\/mp2t|video\/iso\.segment)/i;
+// Responses that can never be media, whatever their URL happens to contain.
+const NON_MEDIA_CT = /^(text\/|application\/(javascript|x-javascript|json|xml|xhtml|wasm)|font\/|image\/)/i;
+
+function urlPath(url) {
+  try { return new URL(url).pathname; } catch (_) { return (url || '').split(/[?#]/)[0]; }
+}
+
+function isSegment(url, contentType = '') {
+  return SEGMENT_URL.test(url || '') || SEGMENT_CT.test((contentType || '').trim());
+}
+
+function classifyResource(url, contentType = '', size = 0) {
+  const ct = (contentType || '').toLowerCase().trim();
   const u = (url || '').toLowerCase();
+  const isPlaylistCt = ct.includes('mpegurl') || ct.includes('dash+xml');
+  // Images (thumbnails, posters, GIFs) must never be classified as video/audio,
+  // even when their URL contains "/hls/", "audio", "manifest/video" etc.
+  if (ct.startsWith('image/') || (!isPlaylistCt && EXT_IMAGE.test(urlPath(u)))) return null;
+  // Scripts, pages, styles, JSON and fonts with a media-ish word in the URL are not media.
+  if (NON_MEDIA_CT.test(ct) && !isPlaylistCt && !EXT_VIDEO.test(u) && !EXT_AUDIO.test(u) && !EXT_HLS.test(u) && !EXT_DASH.test(u)) return null;
+  // Extension-less downloads served as a generic binary (tokenised CDN links).
+  if (/octet-stream/.test(ct) && !EXT_VIDEO.test(u) && !EXT_AUDIO.test(u) && !EXT_HLS.test(u) && !EXT_DASH.test(u) && !EXT_DOC.test(u)) {
+    if (size >= 500000 && /(video|movie|stream|media|mp4|vod|clip|download)/i.test(u)) return { type: 'video', kind: 'file' };
+    return null;
+  }
   if (EXT_HLS.test(u) || ct.includes('mpegurl') || ct.includes('x-mpegurl') || ct.includes('vnd.apple.mpegurl') || ct.includes('application/vnd.apple.mpegurl') || ct.includes('audio/x-mpegurl')) {
     return { type: 'video', kind: 'hls' };
   }
@@ -55,7 +119,9 @@ function classifyResource(url, contentType = '') {
   // 1. Content-Type explicitly starts with audio/
   // 2. Extension is an explicit audio extension (.mp3, .m4a, .aac, .wav, .ogg, .flac)
   // 3. Instagram/Facebook or DASH audio streams (e.g. audio_dashinit, dash-audio, or audio in URL)
-  const isAudioUrl = EXT_AUDIO.test(u) || (/audio/i.test(u) && !/video_dashinit/i.test(u)) || u.includes('audio_dashinit');
+  // (The bare "audio in URL" hint only applies once a content-type is known — on the
+  // pre-response pass it would tag every /audio-* API call as an audio download.)
+  const isAudioUrl = EXT_AUDIO.test(u) || (ct && /audio/i.test(u) && !/video_dashinit/i.test(u)) || u.includes('audio_dashinit');
   if (ct.startsWith('audio/') || (!ct.startsWith('video/') && isAudioUrl)) {
     return { type: 'audio', kind: 'file' };
   }
@@ -77,7 +143,7 @@ function updateTabBadge(tabId) {
       chrome.action.setBadgeText({ tabId, text: '' });
       return;
     }
-    const cleanStreams = store.streams.filter(it => !/\.m4s(\?|#|$)/i.test(it.url) && !/\/frag\(\d+\)/i.test(it.url));
+    const cleanStreams = store.streams.filter(it => !isSegment(it.url, it.mimeType));
     const count = cleanStreams.length;
     if (count > 0) {
       chrome.action.setBadgeText({ tabId, text: count > 99 ? '99+' : String(count) });
@@ -88,8 +154,32 @@ function updateTabBadge(tabId) {
   } catch (_) {}
 }
 
+// A file URL's extension is a stronger signal than whichever scraper tagged it:
+// stops thumbnails/GIFs showing up under Videos (and vice versa) when a scraper
+// or a loose content-type guessed wrong.
+function reconcileItemType(it) {
+  if (it.kind && it.kind !== 'file') return it;
+  const path = urlPath(it.url);
+  let type = null;
+  if (EXT_IMAGE.test(path)) type = 'image';
+  else if (EXT_VIDEO.test(path)) type = 'video';
+  else if (EXT_AUDIO.test(path)) type = 'audio';
+  if (!type || it.type === type) return it;
+  return { ...it, type, isVideo: type === 'video', isAudio: type === 'audio', isImage: type === 'image', isMuxed: type === 'video' ? it.isMuxed : undefined };
+}
+
 function normalizeSniffedUrl(url) {
   if (!url || typeof url !== 'string') return url;
+  // Buffered/chunked progressive video: players fetch one file as many
+  // `?range=a-b` / `&bytestart=..` requests. Collapse them onto one URL so the
+  // chunks show up as a single downloadable video instead of N junk entries.
+  if (/[?&](range|bytes|bytestart|byteend|rn|rbuf|start|end|offset)=/i.test(url) && !/\.(m3u8|mpd)/i.test(url)) {
+    try {
+      const u = new URL(url);
+      for (const k of ['range', 'bytes', 'bytestart', 'byteend', 'rn', 'rbuf', 'start', 'end', 'offset']) u.searchParams.delete(k);
+      url = u.toString();
+    } catch (_) {}
+  }
   // Instagram / Facebook CDN: clean bytestart & byteend range parameters so the full progressive MP4 is retrieved
   if (/(\.cdninstagram\.com|\.fbcdn\.net)/i.test(url)) {
     try {
@@ -110,17 +200,18 @@ function normalizeSniffedUrl(url) {
 
 function addSniffed(tabId, url, contentType, size = 0) {
   if (tabId < 0 || !/^https?:/i.test(url)) return;
-  // Skip noisy segment spam (.m4s, fragment chunks, googlevideo)
-  if (url.includes('googlevideo.com/videoplayback') || /\.m4s(\?|#|$)/i.test(url) || /\/frag\(\d+\)/i.test(url)) return;
+  // Skip noisy segment spam (.m4s/.ts fragments, googlevideo)
+  if (url.includes('googlevideo.com/videoplayback') || isSegment(url, contentType)) return;
 
   const cleanUrl = normalizeSniffedUrl(url);
   const isInstagramChunk = (cleanUrl !== url);
   url = cleanUrl;
   if (isInstagramChunk) size = 0;
 
-  const c = classifyResource(url, contentType);
+  const c = classifyResource(url, contentType, size);
   if (!c) return;
   if (!tabMediaStore[tabId]) tabMediaStore[tabId] = { streams: [], title: '', url: '' };
+  if (tabMediaStore[tabId].streams.length >= MAX_STREAMS_PER_TAB) return;
 
   const existing = tabMediaStore[tabId].streams.find((s) => s.url === url);
   if (existing) {
@@ -150,6 +241,7 @@ function addSniffed(tabId, url, contentType, size = 0) {
     metaTitle: existingTitle,
   });
   updateTabBadge(tabId);
+  persistTabMediaStore();
   chrome.runtime.sendMessage({ type: 'MEDIA_UPDATE', tabId, data: tabMediaStore[tabId] }).catch(() => {});
 }
 
@@ -157,7 +249,11 @@ chrome.webRequest.onHeadersReceived.addListener(
   (details) => {
     const ctHeader = (details.responseHeaders || []).find((h) => h.name.toLowerCase() === 'content-type');
     const lenHeader = (details.responseHeaders || []).find((h) => h.name.toLowerCase() === 'content-length');
-    const size = lenHeader ? parseInt(lenHeader.value, 10) : 0;
+    let size = lenHeader ? parseInt(lenHeader.value, 10) : 0;
+    // A 206 chunk's Content-Length is just the chunk; the real size is after the "/" in Content-Range.
+    const crHeader = (details.responseHeaders || []).find((h) => h.name.toLowerCase() === 'content-range');
+    const crTotal = crHeader && /\/(\d+)\s*$/.exec(crHeader.value || '');
+    if (crTotal) size = parseInt(crTotal[1], 10) || size;
     addSniffed(details.tabId, details.url, ctHeader ? ctHeader.value : '', size);
   },
   { urls: ['<all_urls>'] },
@@ -342,28 +438,37 @@ function collectPageResources() {
   // Scrape all elements for custom data attributes that contain media URLs
   document.querySelectorAll('*').forEach((el) => {
     for (const attr of el.attributes) {
+      // Video/audio/playlist URLs hide in arbitrary attributes (data-preview,
+      // data-mp4, data-file, ...) so match on the VALUE for those; the name
+      // filter only remains for images/docs to keep thumbnail noise down.
       const name = attr.name.toLowerCase();
-      if (name.includes('src') || name.includes('url') || name.includes('video') || name.includes('stream') || name.includes('href')) {
-        const val = attr.value;
-        if (val && typeof val === 'string' && !val.startsWith('data:') && !val.startsWith('blob:')) {
-          let absUrl;
-          try { absUrl = new URL(val, location.href).href; } catch (_) { continue; }
-          const isPdfPath = /\/pdf\/[a-z0-9.-]+/i.test(absUrl);
-          if (R.hls.test(absUrl)) push(absUrl, 'video', 'hls');
-          else if (R.dash.test(absUrl)) push(absUrl, 'video', 'dash');
-          else if (R.video.test(absUrl)) push(absUrl, 'video');
-          else if (R.audio.test(absUrl)) push(absUrl, 'audio');
-          else if (R.image.test(absUrl)) push(absUrl, 'image');
-          else if (R.doc.test(absUrl) || isPdfPath) push(absUrl, 'doc');
-        }
+      const val = attr.value;
+      if (!val || typeof val !== 'string' || val.length > 2000 || val.startsWith('data:') || val.startsWith('blob:')) continue;
+      const nameHit = name.includes('src') || name.includes('url') || name.includes('video') || name.includes('stream') || name.includes('href');
+      if (!nameHit && !/\.(mp4|webm|m4v|mkv|mov|flv|avi|mp3|m4a|aac|ogg|opus|wav|flac|m3u8|mpd)(\?|#|$)/i.test(val)) continue;
+      let absUrl;
+      try { absUrl = new URL(val, location.href).href; } catch (_) { continue; }
+      if (R.hls.test(absUrl)) push(absUrl, 'video', 'hls');
+      else if (R.dash.test(absUrl)) push(absUrl, 'video', 'dash');
+      else if (R.video.test(absUrl)) push(absUrl, 'video');
+      else if (R.audio.test(absUrl)) push(absUrl, 'audio');
+      else if (nameHit) {
+        const isPdfPath = /\/pdf\/[a-z0-9.-]+/i.test(absUrl);
+        if (R.image.test(absUrl)) push(absUrl, 'image');
+        else if (R.doc.test(absUrl) || isPdfPath) push(absUrl, 'doc');
       }
     }
   });
 
   // Scan all page script elements and innerHTML for media URLs
   try {
-    const pageHtml = document.documentElement.innerHTML;
-    const absUrlRegex = /(https?:\/\/[^\s"'`<>]+?\.(?:mp4|webm|m4v|mkv|mov|flv|avi|mp3|m4a|aac|ogg|opus|wav|flac|pdf|docx?|pptx?|xlsx?|epub|rtf|csv|zip|rar|7z|apk|torrent|m3u8|mpd)(?:\?[^\s"'`<>]*)?)/gi;
+    // URLs inside inline JSON are usually escaped ("https:\/\/cdn\/v.mp4" or /),
+    // which the URL regexes below can't match until they are unescaped.
+    const pageHtml = document.documentElement.innerHTML
+      .replace(/\\u002F/gi, '/')
+      .replace(/\\\//g, '/')
+      .replace(/&amp;/g, '&');
+    const absUrlRegex = /(https?:\/\/[^\s"'`<>\\]+?\.(?:mp4|webm|m4v|mkv|mov|flv|avi|mp3|m4a|aac|ogg|opus|wav|flac|pdf|docx?|pptx?|xlsx?|epub|rtf|csv|zip|rar|7z|apk|torrent|m3u8|mpd)(?:\?[^\s"'`<>\\]*)?)/gi;
     let m;
     while ((m = absUrlRegex.exec(pageHtml)) !== null) {
       const u = m[1];
@@ -426,7 +531,7 @@ function nextHeaderRuleId() {
  */
 async function probeSize(url) {
   try {
-    const res = await fetch(url, { method: 'HEAD', credentials: 'include' });
+    const res = await fetch(url, { method: 'HEAD', credentials: 'include', signal: AbortSignal.timeout(8000) });
     if (res.ok) {
       const len = res.headers.get('content-length');
       if (len) return parseInt(len, 10) || 0;
@@ -434,7 +539,7 @@ async function probeSize(url) {
   } catch (_) {}
 
   try {
-    const res = await fetch(url, { headers: { Range: 'bytes=0-0' }, credentials: 'include' });
+    const res = await fetch(url, { headers: { Range: 'bytes=0-0' }, credentials: 'include', signal: AbortSignal.timeout(8000) });
     if (res.status === 206) {
       const cr = res.headers.get('content-range');
       const m = cr && cr.match(/\/(\d+)\s*$/);
@@ -531,7 +636,233 @@ async function syncDomainAllowRules(disabledDomains) {
   });
 }
 
+// Persistent Download State Helpers (Powered by IndexedDB).
+// Module scope on purpose: the chrome.downloads listeners further down call
+// these too, and when they lived inside the onMessage handler every native
+// download event threw a ReferenceError, so direct downloads never reached the
+// Active list or History.
+async function updateDownloadHistory(entry) {
+  try {
+    if (typeof DownloadDB !== 'undefined' && DownloadDB.saveDownload) {
+      await DownloadDB.saveDownload(entry);
+    }
+    // Keep a small 30-item buffer in storage.local for quick fallback
+    const res = await chrome.storage.local.get(['downloadHistory']);
+    let history = Array.isArray(res.downloadHistory) ? res.downloadHistory : [];
+    history = history.filter(h => h.id !== entry.id && (!entry.downloadId || h.downloadId !== entry.downloadId));
+    history.unshift(entry);
+    if (history.length > 30) history = history.slice(0, 30);
+    await chrome.storage.local.set({ downloadHistory: history });
+
+    chrome.runtime.sendMessage({ type: 'DOWNLOAD_HISTORY_UPDATED', history, item: entry }).catch(() => {});
+  } catch (e) {
+    console.error('Error updating download history:', e);
+  }
+}
+
+async function updateActiveDownload(id, data) {
+  try {
+    const res = await chrome.storage.local.get(['activeDownloads']);
+    const active = res.activeDownloads || {};
+    if (data) {
+      active[id] = { id, ...data, updatedAt: Date.now() };
+    } else {
+      delete active[id];
+    }
+    await chrome.storage.local.set({ activeDownloads: active });
+    chrome.runtime.sendMessage({ type: 'ACTIVE_DOWNLOADS_UPDATED', active }).catch(() => {});
+  } catch (_) {}
+}
+
+// ── Offscreen job tracking ──
+// HLS / ranged / zip jobs run in the offscreen document, which has no
+// chrome.storage. Its MUX_PROGRESS broadcasts are mirrored here so the Downloads
+// list (popup, grabber, any tab) can read them from one place.
+let jobWriteChain = Promise.resolve();
+function mutateJobs(fn) {
+  jobWriteChain = jobWriteChain.then(async () => {
+    try {
+      const { activeDownloadJobs } = await chrome.storage.local.get('activeDownloadJobs');
+      const jobs = activeDownloadJobs || {};
+      fn(jobs);
+      await chrome.storage.local.set({ activeDownloadJobs: jobs });
+      updateJobsBadge(Object.keys(jobs).length);
+    } catch (_) {}
+  });
+  return jobWriteChain;
+}
+
+function recordJobProgress(m) {
+  return mutateJobs((jobs) => {
+    const prev = jobs[m.id] || {};
+    jobs[m.id] = {
+      ...prev,
+      id: m.id,
+      filename: m.filename || prev.filename || 'Streaming Media',
+      percent: m.percent !== undefined ? m.percent : (prev.percent || 0),
+      status: m.status || '',
+      speedMBs: m.speedMBs || 0,
+      etaSeconds: m.etaSeconds || 0,
+      paused: !!m.paused,
+      startTime: prev.startTime || Date.now(),
+      updatedAt: Date.now()
+    };
+  });
+}
+
+function dropJob(id) {
+  return mutateJobs((jobs) => { delete jobs[id]; });
+}
+
+// Toolbar badge: how many background jobs are running, whichever tab is open.
+function updateJobsBadge(count) {
+  if (count > 0) {
+    chrome.action.setBadgeText({ text: String(count) });
+    chrome.action.setBadgeBackgroundColor({ color: '#6366f1' });
+  } else {
+    chrome.action.getBadgeText({}, (t) => {
+      void chrome.runtime.lastError;
+      if (t && /^\d+$/.test(t)) chrome.action.setBadgeText({ text: '' });
+    });
+  }
+}
+
+const DEFAULT_MAX_JOBS = 2;
+function clampMaxJobs(n) {
+  n = parseInt(n, 10);
+  return Math.max(1, Math.min(10, Number.isFinite(n) ? n : DEFAULT_MAX_JOBS));
+}
+// Parallel connections each download opens. Per-connection speed is capped by
+// latency and by CDN throttling, so more connections is what raises throughput.
+const DEFAULT_CONNECTIONS = 16;
+function clampConnections(n) {
+  n = parseInt(n, 10);
+  return Math.max(1, Math.min(32, Number.isFinite(n) ? n : DEFAULT_CONNECTIONS));
+}
+async function dispatchToOffscreen(payload) {
+  await ensureOffscreen();
+  const { maxConcurrentJobs, connectionsPerJob } = await chrome.storage.local.get(['maxConcurrentJobs', 'connectionsPerJob']);
+  return chrome.runtime.sendMessage({
+    ...payload,
+    maxJobs: clampMaxJobs(maxConcurrentJobs),
+    connections: clampConnections(connectionsPerJob)
+  });
+}
+
+// ── Header (Referer/Origin) rules held for the life of a download ──
+// The old code removed the rule 15s after a download began. Anything that
+// happens later — Chrome auto-resuming after a network drop, the offscreen
+// fetches for an HLS/ranged job — then hit the origin with no Referer and got
+// a 403. Rules are now tracked in storage.session (survives worker restarts,
+// cleared on browser exit) and released only when the download ends.
+const HELD_RULES_KEY = 'heldHeaderRules'; // { <key>: ruleId }
+
+async function readHeldRules() {
+  try {
+    const r = await chrome.storage.session.get(HELD_RULES_KEY);
+    return r[HELD_RULES_KEY] || {};
+  } catch (_) { return {}; }
+}
+
+async function holdHeaderRule(key, ruleId) {
+  const held = await readHeldRules();
+  held[key] = ruleId;
+  try { await chrome.storage.session.set({ [HELD_RULES_KEY]: held }); } catch (_) {}
+}
+
+async function releaseHeldRule(key) {
+  const held = await readHeldRules();
+  const ruleId = held[key];
+  if (ruleId === undefined) return;
+  delete held[key];
+  try { await chrome.storage.session.set({ [HELD_RULES_KEY]: held }); } catch (_) {}
+  chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [ruleId] }).catch(() => {});
+}
+
+function releaseJobHeaderRule(jobId) {
+  if (jobId) releaseHeldRule('job:' + jobId);
+}
+
+// Dynamic rules persist across browser restarts but the held map does not, so
+// anything in the header band that is not in the map is an orphan.
+async function sweepOrphanHeaderRules() {
+  try {
+    const held = Object.values(await readHeldRules());
+    const rules = await chrome.declarativeNetRequest.getDynamicRules();
+    const orphans = rules
+      .filter(r => r.id >= RULE_BAND_HEADERS && r.id < RULE_BAND_HEADERS + 100000 && !held.includes(r.id))
+      .map(r => r.id);
+    if (orphans.length) await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: orphans });
+  } catch (_) {}
+}
+
+/**
+ * Referer/Origin rule for fetches the OFFSCREEN document makes on a job's
+ * behalf (HLS segments, ranged downloads). Those never went through the
+ * DOWNLOAD_STREAM rule, so protected CDNs rejected them. Scoped to requests the
+ * extension itself initiates, so it can't alter the user's normal browsing.
+ * Segment hosts aren't known up front, so the manifest host and its parent
+ * domain are covered (requestDomains also matches subdomains).
+ */
+async function installJobHeaderRule(jobId, mediaUrl, pageUrl) {
+  const { referer, origin } = deriveReferer(pageUrl, mediaUrl);
+  if (!referer) return;
+  let host = '';
+  try { host = new URL(mediaUrl).hostname; } catch (_) { return; }
+
+  const domains = new Set([host]);
+  const labels = host.split('.');
+  if (labels.length > 2 && !/^\d+(\.\d+){3}$/.test(host)) domains.add(labels.slice(-2).join('.'));
+  try { domains.add(new URL(pageUrl).hostname); } catch (_) {}
+
+  const ruleId = nextHeaderRuleId();
+  try {
+    await chrome.declarativeNetRequest.updateDynamicRules({
+      removeRuleIds: [ruleId],
+      addRules: [{
+        id: ruleId,
+        priority: 99,
+        action: {
+          type: 'modifyHeaders',
+          requestHeaders: [
+            { header: 'Referer', operation: 'set', value: referer },
+            { header: 'Origin', operation: 'set', value: origin }
+          ]
+        },
+        condition: {
+          requestDomains: [...domains],
+          initiatorDomains: [chrome.runtime.id],
+          resourceTypes: ['xmlhttprequest', 'other']
+        }
+      }]
+    });
+    await holdHeaderRule('job:' + jobId, ruleId);
+  } catch (err) {
+    console.error('Failed to set job header rule:', err);
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'MUX_PROGRESS' && message.id) { recordJobProgress(message); return false; }
+  if (message.type === 'MUX_DONE' && message.id) { dropJob(message.id); return false; }
+
+  if (message.type === 'SET_CONNECTIONS') {
+    const value = clampConnections(message.value);
+    chrome.storage.local.set({ connectionsPerJob: value }, () => sendResponse({ ok: true, value }));
+    return true;
+  }
+
+  if (message.type === 'SET_MAX_JOBS') {
+    const value = clampMaxJobs(message.value);
+    chrome.storage.local.set({ maxConcurrentJobs: value }, () => {
+      chrome.offscreen.hasDocument().then((has) => {
+        if (has) chrome.runtime.sendMessage({ type: 'SET_MAX_JOBS_APPLY', maxJobs: value }).catch(() => {});
+      });
+      sendResponse({ ok: true, value });
+    });
+    return true;
+  }
+
   // Ad Blocker status & per-domain toggle
   if (message.type === 'GET_ADBLOCK_STATUS') {
     const targetDomain = normalizeDomain(message.domain || '');
@@ -598,11 +929,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // explicitly instead. Without this fallback, every content-script-driven
     // clear (including the SPA-navigation auto-clear below) silently no-oped.
     const tabId = message.tabId || sender.tab?.id;
-    if (tabId && tabMediaStore[tabId]) {
-      tabMediaStore[tabId] = { streams: [], title: '', url: '' };
-    }
-    updateTabBadge(tabId);
-    sendResponse({ ok: true });
+    storeReady.then(() => {
+      if (tabId && tabMediaStore[tabId]) {
+        tabMediaStore[tabId] = { streams: [], title: '', url: '' };
+        persistTabMediaStore();
+      }
+      updateTabBadge(tabId);
+      sendResponse({ ok: true });
+    });
     return true;
   }
 
@@ -622,43 +956,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // 32MB and amplified memory roughly 8-20x. Bulk ZIP now runs entirely inside
   // the offscreen document; see BUILD_ZIP above.
 
-  // Persistent Download State Helpers (Powered by IndexedDB)
-  async function updateDownloadHistory(entry) {
-    try {
-      if (typeof DownloadDB !== 'undefined' && DownloadDB.saveDownload) {
-        await DownloadDB.saveDownload(entry);
-      }
-      // Keep a small 30-item buffer in storage.local for quick fallback
-      const res = await chrome.storage.local.get(['downloadHistory']);
-      let history = Array.isArray(res.downloadHistory) ? res.downloadHistory : [];
-      history = history.filter(h => h.id !== entry.id && (!entry.downloadId || h.downloadId !== entry.downloadId));
-      history.unshift(entry);
-      if (history.length > 30) history = history.slice(0, 30);
-      await chrome.storage.local.set({ downloadHistory: history });
-
-      chrome.runtime.sendMessage({ type: 'DOWNLOAD_HISTORY_UPDATED', history, item: entry }).catch(() => {});
-    } catch (e) {
-      console.error('Error updating download history:', e);
-    }
-  }
-
-  async function updateActiveDownload(id, data) {
-    try {
-      const res = await chrome.storage.local.get(['activeDownloads']);
-      const active = res.activeDownloads || {};
-      if (data) {
-        active[id] = { id, ...data, updatedAt: Date.now() };
-      } else {
-        delete active[id];
-      }
-      await chrome.storage.local.set({ activeDownloads: active });
-      chrome.runtime.sendMessage({ type: 'ACTIVE_DOWNLOADS_UPDATED', active }).catch(() => {});
-    } catch (_) {}
-  }
-
   // A mux/parallel-download/zip job that failed before ever reaching chrome.downloads
   // (bad playlist, network error, cancel). Record it so it still shows up in history.
   if (message.type === 'MUX_FAILED') {
+    releaseJobHeaderRule(message.id);
+    dropJob(message.id);
     updateDownloadHistory({
       id: message.id,
       filename: message.filename || 'media_file',
@@ -672,6 +974,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // Offscreen finished assembling -> SW saves the blob URL (offscreen lacks chrome.downloads).
   if (message.type === 'OFFSCREEN_DOWNLOAD') {
+    // Fetching is over; the save reads a blob: URL, which needs no header rule.
+    releaseJobHeaderRule(message.id);
+    dropJob(message.id);
     withDownloadFolder(message.filename).then((targetFilename) => {
     chrome.downloads.download({ url: message.url, filename: targetFilename, saveAs: false }, async (downloadId) => {
       if (chrome.runtime.lastError) {
@@ -689,6 +994,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
         return;
       }
+
+      const blobSaves = await readSession(BLOB_SAVES_KEY);
+      blobSaves[downloadId] = message.id;
+      await writeSession(BLOB_SAVES_KEY, blobSaves);
 
       await updateActiveDownload(message.id, {
         downloadId,
@@ -748,13 +1057,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // the bytes itself. Nothing binary crosses a message, and the blob is created
   // in a document that outlives the popup.
   if (message.type === 'BUILD_ZIP') {
-    ensureOffscreen()
-      .then(() => chrome.runtime.sendMessage({
+    dispatchToOffscreen({
         type: 'DO_ZIP',
         id: message.id,
         items: message.items,
         filename: message.filename
-      }))
+      })
       .catch((err) => chrome.runtime.sendMessage({ type: 'MUX_DONE', id: message.id, error: err.message }));
     sendResponse({ ok: true });
     return true;
@@ -762,8 +1070,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // Client-side HLS mux: hand the .m3u8 to the offscreen document.
   if (message.type === 'MUX_HLS') {
-    ensureOffscreen()
-      .then(() => chrome.runtime.sendMessage({
+    installJobHeaderRule(message.id, message.url, message.pageUrl)
+      .then(() => dispatchToOffscreen({
         type: 'DO_MUX',
         id: message.id,
         url: message.url,
@@ -786,8 +1094,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // Client-side parallel download: hand the URL to the offscreen document.
   if (message.type === 'DOWNLOAD_PARALLEL') {
-    ensureOffscreen()
-      .then(() => chrome.runtime.sendMessage({ type: 'DO_PARALLEL', id: message.id, url: message.url, filename: message.filename }))
+    installJobHeaderRule(message.id, message.url, message.pageUrl)
+      .then(() => dispatchToOffscreen({ type: 'DO_PARALLEL', id: message.id, url: message.url, filename: message.filename }))
       .catch((err) => chrome.runtime.sendMessage({ type: 'MUX_DONE', id: message.id, error: err.message }));
     sendResponse({ ok: true });
     return true;
@@ -832,25 +1140,38 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Full page scan: DOM resources (all frames) + sniffed network streams, merged.
   if (message.type === 'SCAN_TAB') {
     const tabId = message.tabId;
-    if (message.reset && tabMediaStore[tabId]) {
-      tabMediaStore[tabId].streams = [];
-    }
-    chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
-      func: collectPageResources,
-    }).then((results) => {
-      const domItems = [];
-      for (const r of results || []) if (r && r.result) domItems.push(...r.result);
+    (async () => {
+      await storeReady;
+      // Note: a rescan deliberately does NOT drop the sniffed streams — network
+      // requests can't be replayed, so wiping them made "Refresh" lose most of
+      // what the badge had counted. Use CLEAR_TAB_MEDIA to actually reset.
       const sniffed = (tabMediaStore[tabId] && tabMediaStore[tabId].streams) || [];
+      const domItems = [];
+      let scanError = '';
+      try {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId, allFrames: true },
+          func: collectPageResources,
+        });
+        for (const r of results || []) if (r && r.result) domItems.push(...r.result);
+      } catch (err) {
+        // Restricted/loading frame: still return everything sniffed off the network.
+        scanError = err.message;
+      }
       const seen = new Set();
       const items = [];
-      for (const it of [...sniffed, ...domItems]) {
-        if (!it.url || seen.has(it.url)) continue;
-        seen.add(it.url);
-        items.push(it);
+      for (const raw of [...sniffed, ...domItems]) {
+        if (!raw.url || seen.has(raw.url)) continue;
+        if (isSegment(raw.url, raw.mimeType)) continue;
+        seen.add(raw.url);
+        items.push(reconcileItemType(raw));
+      }
+      if (!items.length && scanError) {
+        sendResponse({ ok: false, error: scanError });
+        return;
       }
       sendResponse({ ok: true, items, title: (tabMediaStore[tabId] && tabMediaStore[tabId].title) || '' });
-    }).catch((err) => sendResponse({ ok: false, error: err.message }));
+    })();
     return true;
   }
 
@@ -859,12 +1180,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const tabId = sender.tab?.id;
     if (!tabId) { sendResponse({ ok: false, reason: 'no tabId' }); return true; }
 
+    const payload = message.data?.payload;
+    if (!payload) { sendResponse({ ok: false, reason: 'no payload' }); return true; }
+
     if (!tabMediaStore[tabId]) {
       tabMediaStore[tabId] = { streams: [], title: '', url: '' };
     }
-
-    const payload = message.data?.payload;
-    if (!payload) { sendResponse({ ok: false, reason: 'no payload' }); return true; }
 
     tabMediaStore[tabId].title = payload.title || tabMediaStore[tabId].title;
     tabMediaStore[tabId].url = payload.url || tabMediaStore[tabId].url;
@@ -875,14 +1196,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     for (const rawStream of (payload.streams || [])) {
       if (!rawStream.url) continue;
       rawStream.url = normalizeSniffedUrl(rawStream.url);
+      if (isSegment(rawStream.url, rawStream.mimeType)) continue;
       const c = classifyResource(rawStream.url, rawStream.mimeType || rawStream.codec || '');
-      const normalized = {
+      const type = rawStream.type || (c ? c.type : (rawStream.isVideo ? 'video' : rawStream.isAudio ? 'audio' : 'doc'));
+      const normalized = reconcileItemType({
         ...rawStream,
-        type: rawStream.type || (c ? c.type : (rawStream.isVideo ? 'video' : rawStream.isAudio ? 'audio' : 'file')),
+        type,
         kind: rawStream.kind || (c ? c.kind : (/\.m3u8/i.test(rawStream.url) ? 'hls' : /\.mpd/i.test(rawStream.url) ? 'dash' : 'file')),
-        isVideo: rawStream.isVideo !== undefined ? rawStream.isVideo : (c ? c.type === 'video' : true),
-        isAudio: rawStream.isAudio !== undefined ? rawStream.isAudio : (c ? c.type === 'audio' : false),
-      };
+        // Derive from the resolved type — defaulting to true tagged og:image
+        // thumbnails as videos, which is how images ended up mixed into Videos.
+        isVideo: rawStream.isVideo !== undefined ? rawStream.isVideo : type === 'video',
+        isAudio: rawStream.isAudio !== undefined ? rawStream.isAudio : type === 'audio',
+      });
 
       if (existingMap.has(rawStream.url)) {
         const existing = existingMap.get(rawStream.url);
@@ -898,6 +1223,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     updateTabBadge(tabId);
+    persistTabMediaStore();
 
     // Notify any open DevTools panel for this tab (fire-and-forget)
     chrome.runtime.sendMessage({
@@ -912,7 +1238,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // DevTools panel requesting stored data
   if (message.type === 'GET_MEDIA') {
-    sendResponse(tabMediaStore[message.tabId] || { streams: [], title: '', url: '' });
+    storeReady.then(() => sendResponse(tabMediaStore[message.tabId] || { streams: [], title: '', url: '' }));
     return true;
   }
 
@@ -1070,7 +1396,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       let safeName = (filename || 'video').replace(/\.(m3u8|mpd|txt|htm|html|php|aspx|cgi)$/i, '');
       if (!/\.[a-z0-9]{2,5}$/i.test(safeName)) safeName += '.mp4';
 
-      ensureOffscreen()
+      installJobHeaderRule(id, url, pageUrl)
+        .then(() => ensureOffscreen())
         .then(() => chrome.runtime.sendMessage({
           type: 'DO_MUX',
           id,
@@ -1148,16 +1475,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       triggerDownload();
     }
 
-    function scheduleRuleCleanup() {
-      if (urlHost) {
-        setTimeout(() => {
-          chrome.declarativeNetRequest.updateDynamicRules({
-            removeRuleIds: [ruleId]
-          }).catch(() => {});
-        }, 15000);
-      }
-    }
-
+    // The rule must outlive the first request: Chrome re-requests the file with
+    // the same headers when it resumes an interrupted download. It is released
+    // by the chrome.downloads.onChanged handler once the download finishes.
     function triggerDownload() {
       withDownloadFolder(safeDirectName || 'media.mp4').then((targetFilename) => {
         chrome.downloads.download({
@@ -1165,10 +1485,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           filename: targetFilename,
           saveAs: false
         }, (downloadId) => {
-          scheduleRuleCleanup();
+          const startError = chrome.runtime.lastError && chrome.runtime.lastError.message;
+          if (urlHost) {
+            if (startError || downloadId === undefined) {
+              chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [ruleId] }).catch(() => {});
+            } else {
+              holdHeaderRule('dl:' + downloadId, ruleId);
+            }
+          }
 
-          if (chrome.runtime.lastError) {
-            sendResponse({ ok: false, error: chrome.runtime.lastError.message });
+          if (startError) {
+            sendResponse({ ok: false, error: startError });
           } else {
             sendResponse({ ok: true, downloadId });
           }
@@ -1343,6 +1670,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               status: v.status || '',
               speedMBs: v.speedMBs || 0,
               etaSeconds: v.etaSeconds || 0,
+              paused: !!v.paused,
               type: k.startsWith('zip_') ? 'zip' : 'hls',
               startTime: v.updatedAt || Date.now()
             };
@@ -1363,6 +1691,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // Pause / resume. Native downloads go to Chrome; offscreen jobs (HLS, ranged,
+  // zip) have no downloadId yet and are handled by the offscreen document.
+  if (message.type === 'PAUSE_DOWNLOAD_JOB' || message.type === 'RESUME_DOWNLOAD_JOB') {
+    const pausing = message.type === 'PAUSE_DOWNLOAD_JOB';
+    if (message.downloadId) {
+      const fn = pausing ? chrome.downloads.pause : chrome.downloads.resume;
+      fn.call(chrome.downloads, message.downloadId, () => {
+        sendResponse({ ok: !chrome.runtime.lastError, error: chrome.runtime.lastError && chrome.runtime.lastError.message });
+      });
+    } else {
+      ensureOffscreen()
+        .then(() => chrome.runtime.sendMessage({ type: pausing ? 'PAUSE_MUX' : 'RESUME_MUX', id: message.id }))
+        .catch(() => {});
+      sendResponse({ ok: true });
+    }
+    return true;
+  }
+
   if (message.type === 'CANCEL_DOWNLOAD_JOB') {
     const { id, downloadId } = message;
     if (downloadId) {
@@ -1372,6 +1718,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     if (id) {
       updateActiveDownload(id, null);
+      dropJob(id);
       if (id.startsWith('mux_') || id.startsWith('zip_') || id.startsWith('dl_')) {
         ensureOffscreen()
           .then(() => chrome.runtime.sendMessage({ type: 'CANCEL_MUX', id }))
@@ -1467,6 +1814,58 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
+// ── Auto-resume + end-of-download housekeeping ──
+const RESUME_COUNTS_KEY = 'resumeCounts';  // { <downloadId>: attempts }
+const BLOB_SAVES_KEY = 'blobSaves';        // { <downloadId>: offscreen jobId }
+const MAX_AUTO_RESUMES = 10;
+
+async function readSession(key) {
+  try { return (await chrome.storage.session.get(key))[key] || {}; } catch (_) { return {}; }
+}
+async function writeSession(key, value) {
+  try { await chrome.storage.session.set({ [key]: value }); } catch (_) {}
+}
+
+async function resetResumeCount(downloadId) {
+  const counts = await readSession(RESUME_COUNTS_KEY);
+  if (counts[downloadId] === undefined) return;
+  delete counts[downloadId];
+  await writeSession(RESUME_COUNTS_KEY, counts);
+}
+
+async function tryAutoResume(downloadId) {
+  const items = await new Promise((resolve) => chrome.downloads.search({ id: downloadId }, resolve));
+  const item = items && items[0];
+  if (!item || !item.canResume) return false;
+
+  const counts = await readSession(RESUME_COUNTS_KEY);
+  const attempts = counts[downloadId] || 0;
+  if (attempts >= MAX_AUTO_RESUMES) return false;
+  counts[downloadId] = attempts + 1;
+  await writeSession(RESUME_COUNTS_KEY, counts);
+
+  const delay = Math.min(2000 * Math.pow(2, attempts), 15000);
+  setTimeout(() => chrome.downloads.resume(downloadId, () => { void chrome.runtime.lastError; }), delay);
+  return true;
+}
+
+// Runs once a download is truly over (complete, or interrupted and not resumable).
+async function onDownloadFinished(downloadId) {
+  await releaseHeldRule('dl:' + downloadId);
+  await resetResumeCount(downloadId);
+
+  // Tell the offscreen document its blob has been saved so it can free the
+  // scratch file. Done here, not in a per-download listener, because that
+  // listener dies with the worker on a long save.
+  const blobSaves = await readSession(BLOB_SAVES_KEY);
+  const jobId = blobSaves[downloadId];
+  if (jobId) {
+    delete blobSaves[downloadId];
+    await writeSession(BLOB_SAVES_KEY, blobSaves);
+    chrome.runtime.sendMessage({ type: 'DOWNLOAD_SAVED', id: jobId }).catch(() => {});
+  }
+}
+
 // ── Global Browser-Wide chrome.downloads Listeners ──
 chrome.downloads.onCreated.addListener((downloadItem) => {
   if (!downloadItem || !downloadItem.id) return;
@@ -1513,6 +1912,7 @@ chrome.downloads.onChanged.addListener((delta) => {
       item.savePath = delta.filename.current;
       item.filename = delta.filename.current.split(/[\\/]/).pop();
     }
+    if (delta.paused) item.paused = !!delta.paused.current;
     if (delta.totalBytes) item.totalBytes = delta.totalBytes.current;
     if (delta.bytesReceived) {
       const now = Date.now();
@@ -1535,9 +1935,24 @@ chrome.downloads.onChanged.addListener((delta) => {
       item.percent = Math.min(100, Math.round((item.bytesReceived / item.totalBytes) * 100));
     }
     if (delta.state) item.state = delta.state.current;
+    if (delta.bytesReceived) {
+      delete item.status;
+      resetResumeCount(delta.id);
+    }
+
+    // A dropped connection (sleep, Wi-Fi change, server hiccup) interrupts a
+    // native download but Chrome does not always resume it. Retry quietly and
+    // only report failure once resuming is impossible or keeps failing.
+    if (delta.state && delta.state.current === 'interrupted' && await tryAutoResume(delta.id)) {
+      item.state = 'in_progress';
+      item.status = 'Connection lost, reconnecting…';
+      await updateActiveDownload(id, item);
+      return;
+    }
 
     if (delta.state && (delta.state.current === 'complete' || delta.state.current === 'interrupted')) {
       await updateActiveDownload(id, null);
+      await onDownloadFinished(delta.id);
 
       if (delta.state.current === 'complete') {
         chrome.downloads.search({ id: delta.id }, async (items) => {
@@ -1593,6 +2008,43 @@ chrome.downloads.onErased.addListener((downloadId) => {
   updateActiveDownload('dl_' + downloadId, null);
 });
 
+// Browser/worker restart: offscreen jobs that were mid-flight died with the old
+// offscreen document, and native downloads the extension started may be sitting
+// interrupted. Fail the former visibly, resume the latter.
+async function recoverAfterRestart() {
+  try {
+    if (!(await chrome.offscreen.hasDocument())) {
+      const { activeDownloadJobs } = await chrome.storage.local.get('activeDownloadJobs');
+      const jobs = activeDownloadJobs || {};
+      for (const [jobId, job] of Object.entries(jobs)) {
+        await updateDownloadHistory({
+          id: jobId,
+          filename: (job && job.filename) || 'media_file',
+          completedAt: Date.now(),
+          state: 'interrupted',
+          error: 'Interrupted: the browser or extension restarted before this finished',
+          type: jobId.startsWith('zip_') ? 'zip' : (jobId.startsWith('dl_') ? 'file' : 'hls')
+        });
+      }
+      if (Object.keys(jobs).length) await chrome.storage.local.set({ activeDownloadJobs: {} });
+    }
+
+    const ours = Object.keys(await readHeldRules())
+      .filter(k => k.startsWith('dl:'))
+      .map(k => parseInt(k.slice(3), 10));
+    for (const downloadId of ours) {
+      chrome.downloads.search({ id: downloadId }, async (items) => {
+        const it = items && items[0];
+        if (it && it.state === 'in_progress') return;
+        if (it && it.state === 'interrupted' && it.canResume && await tryAutoResume(downloadId)) return;
+        await onDownloadFinished(downloadId); // finished, erased, or unresumable
+      });
+    }
+  } catch (err) {
+    console.error('recoverAfterRestart error:', err);
+  }
+}
+
 // Startup initialization: sync DB and active in-progress downloads
 async function initDownloadTracking() {
   try {
@@ -1627,11 +2079,20 @@ async function initDownloadTracking() {
       }
     }
 
+    await sweepOrphanHeaderRules();
+    await recoverAfterRestart();
+
     // Re-sync any active in-progress downloads
     chrome.downloads.search({ state: 'in_progress' }, (items) => {
       if (Array.isArray(items)) {
         chrome.storage.local.get(['activeDownloads'], (res) => {
           const active = res.activeDownloads || {};
+          // Entries for native downloads Chrome no longer reports as running
+          // are leftovers from before a restart; they would show a frozen bar forever.
+          const running = new Set(items.map(i => 'dl_' + i.id));
+          for (const key of Object.keys(active)) {
+            if (key.startsWith('dl_') && !running.has(key)) delete active[key];
+          }
           for (const item of items) {
             const id = 'dl_' + item.id;
             const filename = item.filename ? item.filename.split(/[\\/]/).pop() : 'Download';
@@ -1670,16 +2131,25 @@ chrome.runtime.onConnect.addListener((port) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   delete tabMediaStore[tabId];
+  persistTabMediaStore();
 });
 
+function stripHash(u) { return (u || '').split('#')[0]; }
+
 // Auto-reset media store when tab navigates to a new URL
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status === 'loading' || changeInfo.url) {
-    if (tabMediaStore[tabId]) {
-      tabMediaStore[tabId] = { streams: [], title: tab?.title || '', url: changeInfo.url || tab?.url || '' };
-      updateTabBadge(tabId);
-    }
-  }
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  if (changeInfo.status !== 'loading' && !changeInfo.url) return;
+  await storeReady;
+  const store = tabMediaStore[tabId];
+  if (!store) return;
+  // Hash-only URL changes (#t=30, #tab) and in-page "loading" blips are not new
+  // pages — wiping there threw away streams the player had already buffered.
+  const newUrl = changeInfo.url || tab?.url || '';
+  if (!changeInfo.url && stripHash(newUrl) === stripHash(store.url)) return;
+  if (changeInfo.url && stripHash(changeInfo.url) === stripHash(store.url)) return;
+  tabMediaStore[tabId] = { streams: [], title: tab?.title || '', url: newUrl };
+  updateTabBadge(tabId);
+  persistTabMediaStore();
 });
 
 // Enforce stored Ad Blocker preference and domain allow rules

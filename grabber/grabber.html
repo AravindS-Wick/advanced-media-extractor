@@ -107,7 +107,15 @@
     </div>
 
     <!-- Active Tasks Section -->
-    <div class="dl-section-label">Active Downloads (<span id="activeDlCount">0</span>)</div>
+    <div class="dl-section-label">Active Downloads (<span id="activeDlCount">0</span>)
+      <label class="dl-max-wrap" title="How many downloads run at once. The rest wait in the queue.">
+        Max at once
+        <select id="maxJobsSelect" class="dl-max-select">
+          <option>1</option><option>2</option><option>3</option><option>4</option><option>5</option>
+          <option>6</option><option>8</option><option>10</option>
+        </select>
+      </label>
+    </div>
     <div id="activeDownloadsList" class="downloads-list-group">
       <div class="empty-dl-sub">No downloads currently in progress.</div>
     </div>
