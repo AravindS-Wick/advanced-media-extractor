@@ -858,7 +858,12 @@ let progressFlushTimer = null;
 const PROGRESS_FLUSH_MS = 400;
 const knownJobIds = new Set();
 
+// Ids of jobs that were cancelled, failed or finished. The offscreen engine can still emit a
+// last progress message after that (an in-flight read, a late 'Starting' update); without this
+// guard it recreated the job as a ghost that stayed 'running' forever.
+const recentlyDroppedJobs = new Map();
 function recordJobProgress(m) {
+  if (Date.now() - (recentlyDroppedJobs.get(m.id) || 0) < FINISHED_GRACE_MS * 2) return;
   pendingProgress.set(m.id, m);
   // A job's first message is written at once so its card appears immediately.
   if (!knownJobIds.has(m.id)) {
@@ -906,6 +911,11 @@ function flushJobProgress() {
 }
 
 function dropJob(id) {
+  recentlyDroppedJobs.set(id, Date.now());
+  if (recentlyDroppedJobs.size > 200) {
+    const cutoff = Date.now() - FINISHED_GRACE_MS * 2;
+    for (const [k, t] of recentlyDroppedJobs) if (t < cutoff) recentlyDroppedJobs.delete(k);
+  }
   pendingProgress.delete(id);
   knownJobIds.delete(id);
   return mutateJobs((jobs) => { delete jobs[id]; });
@@ -1063,6 +1073,7 @@ const JOB_START_TYPES = new Set(['MUX_HLS', 'DOWNLOAD_PARALLEL', 'DOWNLOAD_STREA
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message && message.id && JOB_START_TYPES.has(message.type)) {
+    recentlyDroppedJobs.delete(message.id);
     trackPrivateJob(message.id, sender);
     saveJobSource(message.id, {
       url: message.url, pageUrl: message.pageUrl, pageTitle: message.pageTitle,
