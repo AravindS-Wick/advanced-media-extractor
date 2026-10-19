@@ -817,18 +817,28 @@ async function updateDownloadHistory(entry) {
     if (typeof DownloadDB !== 'undefined' && DownloadDB.saveDownload) {
       await DownloadDB.saveDownload(entry);
     }
-    // Keep a small 30-item buffer in storage.local for quick fallback
+    // Keep a small 30-item buffer in storage.local for quick fallback. This is a
+    // read-modify-write, so it must be serialized — otherwise several downloads
+    // finishing at once each read the same snapshot and the last writer wins,
+    // dropping the others from the buffer (lost "1 of N" history entries).
+    await appendHistoryBuffer(entry);
+  } catch (e) {
+    console.error('Error updating download history:', e);
+  }
+}
+
+let historyWriteChain = Promise.resolve();
+function appendHistoryBuffer(entry) {
+  historyWriteChain = historyWriteChain.then(async () => {
     const res = await chrome.storage.local.get(['downloadHistory']);
     let history = Array.isArray(res.downloadHistory) ? res.downloadHistory : [];
     history = history.filter(h => h.id !== entry.id && (!entry.downloadId || h.downloadId !== entry.downloadId));
     history.unshift(entry);
     if (history.length > 30) history = history.slice(0, 30);
     await chrome.storage.local.set({ downloadHistory: history });
-
     chrome.runtime.sendMessage({ type: 'DOWNLOAD_HISTORY_UPDATED', history, item: entry }).catch(() => {});
-  } catch (e) {
-    console.error('Error updating download history:', e);
-  }
+  }).catch(() => {});
+  return historyWriteChain;
 }
 
 // All writes to activeDownloads go through one chain, and an id that was just
