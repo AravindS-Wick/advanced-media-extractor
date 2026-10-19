@@ -1854,7 +1854,9 @@ function refreshDownloadsList() {
     type: 'GET_DOWNLOADS',
     filter: currentDlFilter,
     date: currentDlCustomDate,
-    query: currentDlQuery
+    query: currentDlQuery,
+    // Only an incognito popup should receive private (incognito) downloads.
+    incognito: !!(chrome.extension && chrome.extension.inIncognitoContext)
   }, (resp) => {
     if (chrome.runtime.lastError || !resp) return;
     renderDownloadsUI(resp.active || [], resp.history || [], resp.stats || {});
@@ -2550,6 +2552,13 @@ function setupDownloadsSync(refresh) {
     if (typeof scanCurrentPage === 'function' && activeTabId) scanCurrentPage(false, true);
   });
   chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'session') {
+      // Private (incognito) downloads live in session storage.
+      if (changes.activeDownloadJobs || changes.activeDownloads || changes.privateHistory) {
+        if (!t) t = setTimeout(() => { t = null; refresh(); }, 250);
+      }
+      return;
+    }
     if (area !== 'local') return;
     if (changes.maxConcurrentJobs) syncSelect(changes.maxConcurrentJobs.newValue);
     if (changes.adBlockEnabled || changes.adBlockDisabledDomains) {
