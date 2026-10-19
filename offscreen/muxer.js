@@ -64,6 +64,14 @@ async function createDiskSink(jobId, mimeType) {
     async write(buf) {
       await writable.write(buf);
     },
+    // Positional write: lets ranged chunks land straight at their final offset
+    // as they arrive, with no reorder buffer and no whole-file staging.
+    async writeAt(position, buf) {
+      await writable.write({ type: 'write', position, data: buf });
+    },
+    async truncate(size) {
+      await writable.truncate(size);
+    },
     async close(overrideMime) {
       await writable.close();
       const file = await handle.getFile();
@@ -95,21 +103,72 @@ async function sweepScratch() {
 }
 sweepScratch();
 
+// Offscreen documents only expose chrome.runtime: chrome.storage is undefined
+// here, so job state is NOT persisted from this file. Every MUX_PROGRESS /
+// MUX_DONE / MUX_FAILED message is mirrored into storage by the service
+// worker, which is also what fails jobs orphaned by a restart.
+
 // Cleanup callbacks keyed by job, run once the worker confirms the save.
 const pendingCleanups = new Map();
 
-function syncJobToStorage(id, data) {
-  try {
-    chrome.storage.local.get(['activeDownloadJobs'], (res) => {
-      const jobs = res.activeDownloadJobs || {};
-      if (data) jobs[id] = { id, ...data, updatedAt: Date.now() };
-      else delete jobs[id];
-      chrome.storage.local.set({ activeDownloadJobs: jobs });
-    });
-  } catch (_) {}
+// ── Job slots ──
+// Downloads that run all at once split the same bandwidth and the same
+// per-host connection limit, so every one of them crawls. Only a couple run at
+// a time; the rest wait as "Queued" and start the moment a slot frees up.
+let MAX_ACTIVE_JOBS = 2;
+let runningSlots = 0;
+const slotQueue = [];
+
+function registerJob(id, filename, abortController) {
+  const job = { id, abortController, startTime: Date.now(), filename, slotHeld: false };
+  activeJobs.set(id, job);
+  return job;
+}
+
+function acquireSlot(job) {
+  if (runningSlots < MAX_ACTIVE_JOBS) {
+    runningSlots++;
+    job.slotHeld = true;
+    return Promise.resolve();
+  }
+  progress(job.id, { filename: job.filename, percent: 0, status: 'Queued' });
+  return new Promise((resolve, reject) => slotQueue.push({ job, resolve, reject }));
+}
+
+// Hand free slots to waiting jobs, never beyond the current limit. Checking the
+// limit here (not just in acquireSlot) is what makes lowering it mid-download
+// work: running jobs finish on their own, and no waiter starts until the count
+// has dropped below the new limit.
+function drainQueue() {
+  while (runningSlots < MAX_ACTIVE_JOBS && slotQueue.length) {
+    const next = slotQueue.shift();
+    runningSlots++;
+    next.job.slotHeld = true;
+    next.resolve();
+  }
+}
+
+function releaseJobSlot(job) {
+  if (!job || !job.slotHeld) return;
+  job.slotHeld = false;
+  runningSlots--;
+  drainQueue();
+}
+
+// User-configurable (popup settings). Raising it starts waiting jobs at once.
+function setMaxJobs(n) {
+  MAX_ACTIVE_JOBS = Math.max(1, Math.min(10, parseInt(n, 10) || 2));
+  drainQueue();
+}
+
+function dropQueued(id) {
+  const i = slotQueue.findIndex((q) => q.job.id === id);
+  if (i >= 0) slotQueue.splice(i, 1)[0].reject(new Error('Cancelled by user'));
 }
 
 chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.connections) CONNECTIONS = Math.max(1, Math.min(32, parseInt(msg.connections, 10) || 16));
+  if (msg.maxJobs) setMaxJobs(msg.maxJobs); // also carried by SET_MAX_JOBS_APPLY
   if (msg.type === 'DO_MUX') {
     handleHlsMux(msg).catch((e) => done(msg.id, { error: String(e.message || e) }));
   } else if (msg.type === 'DO_PARALLEL') {
@@ -123,27 +182,45 @@ chrome.runtime.onMessage.addListener((msg) => {
       pendingCleanups.delete(msg.id);
       Promise.resolve(cleanup()).catch(() => {});
     }
+  } else if (msg.type === 'PAUSE_MUX') {
+    setPaused(msg.id, true);
+  } else if (msg.type === 'RESUME_MUX') {
+    setPaused(msg.id, false);
   } else if (msg.type === 'CANCEL_MUX' || msg.type === 'CANCEL_DOWNLOAD') {
     const job = activeJobs.get(msg.id);
     if (job && job.abortController) {
       job.abortController.abort();
+      wakeWaiters(job);
+      dropQueued(msg.id);
+      releaseJobSlot(job);
       activeJobs.delete(msg.id);
-      syncJobToStorage(msg.id, null);
       if (job.sink) Promise.resolve(job.sink.abort()).catch(() => {});
       done(msg.id, { error: 'Cancelled by user' });
     }
   }
 });
 
+// done()/MUX_* must fire exactly once per job. A cancel deletes the job and
+// calls done() synchronously, but a worker still unwinding can reject and call
+// done() a second time; without this guard that emits a duplicate
+// MUX_FAILED/MUX_DONE pair (and a duplicate history card).
+const finishedJobs = new Set();
+
 function done(id, payload) {
+  if (finishedJobs.has(id)) return;
+  finishedJobs.add(id);
+  // Keep the set bounded over a long-lived offscreen document.
+  if (finishedJobs.size > 500) finishedJobs.delete(finishedJobs.values().next().value);
   const job = activeJobs.get(id);
+  releaseJobSlot(job);
   activeJobs.delete(id);
-  syncJobToStorage(id, null);
   // A failure here (bad playlist, network error, cancel) happens before handOff()
   // ever runs, so it never reaches chrome.downloads and would otherwise vanish
   // the moment the popup/tab that started it closes. Record it explicitly so it
   // shows up in the Downloads history instead of silently disappearing.
   if (payload && payload.error) {
+    // A failed job never reaches handOff, so nothing else would free its scratch file.
+    if (job && job.sink) Promise.resolve(job.sink.abort()).catch(() => {});
     chrome.runtime.sendMessage({
       type: 'MUX_FAILED',
       id,
@@ -155,9 +232,51 @@ function done(id, payload) {
   chrome.runtime.sendMessage({ type: 'MUX_DONE', id, ...payload }).catch(() => {});
 }
 
-function progress(id, progressPayload) {
-  syncJobToStorage(id, progressPayload);
-  chrome.runtime.sendMessage({ type: 'MUX_PROGRESS', id, ...progressPayload }).catch(() => {});
+// Every progress message makes the popup re-query the download list, so one
+// per finished segment per job is far too chatty. State is always recorded;
+// the broadcast is limited to a few per second per job.
+const PROGRESS_INTERVAL_MS = 500;
+
+function progress(id, progressPayload, force = false) {
+  const job = activeJobs.get(id);
+  // A cancelled or finished job has been removed from activeJobs. A worker that
+  // is still unwinding (an in-flight sink.writeAt, a late onBytes -> report())
+  // must not emit progress for it: the service worker would re-create it as a
+  // "downloading" ghost card that never clears. The completion/failure is
+  // already signalled by MUX_DONE / MUX_FAILED, not by progress.
+  if (!job) return;
+  const paused = !!job.paused;
+  const payload = { ...progressPayload, paused, ...(paused ? { status: 'Paused' } : {}) };
+  job.last = progressPayload;
+
+  const now = Date.now();
+  if (!force && now - (job.lastSent || 0) < PROGRESS_INTERVAL_MS) return;
+  job.lastSent = now;
+  chrome.runtime.sendMessage({ type: 'MUX_PROGRESS', id, ...payload }).catch(() => {});
+}
+
+// ── Pause / resume ──
+// Workers call waitIfPaused() before starting each segment, range or file, so
+// a pause lets in-flight pieces finish and then holds the job without
+// discarding anything already on disk. Cancel wakes any waiters.
+async function waitIfPaused(id) {
+  for (;;) {
+    const job = activeJobs.get(id);
+    if (!job || !job.paused || job.abortController.signal.aborted) return;
+    await new Promise((resolve) => { (job.waiters = job.waiters || []).push(resolve); });
+  }
+}
+
+function wakeWaiters(job) {
+  if (job && job.waiters) job.waiters.splice(0).forEach((r) => r());
+}
+
+function setPaused(id, paused) {
+  const job = activeJobs.get(id);
+  if (!job) return;
+  job.paused = paused;
+  if (!paused) wakeWaiters(job);
+  progress(id, job.last || { filename: job.filename, percent: 0 }, true);
 }
 
 /**
@@ -166,6 +285,11 @@ function progress(id, progressPayload) {
  * fixed 5-minute timer could fire while a slow write was still in flight.
  */
 function handOff(id, blob, filename, extra = {}, cleanup = null) {
+  // Fetching is finished. Without this the job stayed in activeJobs forever:
+  // a ghost entry in the Active list, and a keep-alive that never switched off.
+  releaseJobSlot(activeJobs.get(id));
+  activeJobs.delete(id);
+
   const objectUrl = URL.createObjectURL(blob);
   if (cleanup) pendingCleanups.set(id, async () => { URL.revokeObjectURL(objectUrl); await cleanup(); });
   else pendingCleanups.set(id, async () => URL.revokeObjectURL(objectUrl));
@@ -178,12 +302,13 @@ function handOff(id, blob, filename, extra = {}, cleanup = null) {
     ...extra
   }).catch(() => {});
 
-  // Backstop: if the worker never confirms (it was asleep and the wake failed),
-  // release after a generous window so scratch files don't accumulate forever.
+  // Backstop only: the worker normally confirms via DOWNLOAD_SAVED. Copying a
+  // multi-GB blob to the user's disk can take a long while on a slow drive, and
+  // revoking the URL mid-copy would fail the save, so the window is generous.
   setTimeout(() => {
     const cb = pendingCleanups.get(id);
     if (cb) { pendingCleanups.delete(id); Promise.resolve(cb()).catch(() => {}); }
-  }, 15 * 60 * 1000);
+  }, 6 * 60 * 60 * 1000);
 }
 
 // ──────────────────────────────────────────────
@@ -192,17 +317,21 @@ function handOff(id, blob, filename, extra = {}, cleanup = null) {
 async function handleHlsMux({ id, url, filename, preferredQuality }) {
   ensureKeepAlive();
   const abortController = new AbortController();
+  const job = registerJob(id, filename, abortController);
+  await acquireSlot(job);
 
   const sink = await createDiskSink(id, null);
-  activeJobs.set(id, { abortController, startTime: Date.now(), filename, sink });
-  syncJobToStorage(id, { filename, percent: 0, status: 'Starting HLS fetch…' });
+  job.sink = sink;
+  progress(id, { filename, percent: 0, status: 'Starting HLS fetch…' }, true);
 
-  const downloader = new HlsDownloader({ concurrency: 6, maxRetries: 3, retryDelayMs: 800 });
+  // ~1 min of backoff per segment, plus unlimited-ish waiting while offline.
+  const downloader = new HlsDownloader({ concurrency: CONNECTIONS, maxRetries: 6, retryDelayMs: 1000 });
 
   const result = await downloader.download(url, {
     signal: abortController.signal,
     preferredQuality,
     sink,
+    waitIfPaused: () => waitIfPaused(id),
     onProgress: (p) => {
       progress(id, {
         filename,
@@ -228,156 +357,192 @@ async function handleHlsMux({ id, url, filename, preferredQuality }) {
 
 // ──────────────────────────────────────────────
 // DIRECT / PARALLEL FILE DOWNLOAD
+//
+// The file is cut into small ranges that a pool of workers pulls from a shared
+// queue, each streamed straight to its final offset in the OPFS file. Compared
+// with the old "one quarter of the file per connection" split this:
+//   - never idles on the slowest quarter (a worker that finishes just takes the
+//     next range), which is what made large files crawl;
+//   - retries and resumes a failed range from the byte it reached, instead of
+//     failing the whole job on the first dropped connection;
+//   - holds only the in-flight chunks in memory, not the whole file.
 // ──────────────────────────────────────────────
+const RANGE_CHUNK_BYTES = 8 * 1024 * 1024;
+let CONNECTIONS = 16; // per download; set from the popup via the service worker
+const RANGE_MAX_ATTEMPTS = 8;
+
+const MIME_BY_EXT = {
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif',
+  svg: 'image/svg+xml', mp3: 'audio/mpeg', m4a: 'audio/mp4', wav: 'audio/wav', ogg: 'audio/ogg',
+  webm: 'video/webm', zip: 'application/zip', pdf: 'application/pdf'
+};
+
+function mimeForDownload(cleanName, url) {
+  const m = cleanName.match(/\.([a-z0-9]{2,5})$/i) || (url || '').match(/\.([a-z0-9]{2,5})(\?|#|$)/i);
+  const ext = m ? m[1].toLowerCase() : 'mp4';
+  return MIME_BY_EXT[ext] || 'video/mp4';
+}
+
+function httpError(status) {
+  const e = new Error(`HTTP ${status}`);
+  e.status = status;
+  return e;
+}
+
+function isPermanentHttp(err, attempt) {
+  const s = err && err.status;
+  return s === 400 || s === 401 || s === 404 || s === 410 || (s === 403 && attempt >= 2);
+}
+
+/** Total size and range support. A real 1-byte ranged GET beats trusting Accept-Ranges. */
+async function probeRemote(url, signal) {
+  try {
+    const r = await fetch(url, { headers: { Range: 'bytes=0-0' }, credentials: 'include', signal });
+    if (r.status === 206) {
+      const cr = r.headers.get('content-range');
+      const m = cr && cr.match(/\/(\d+)\s*$/);
+      if (m) return { totalSize: parseInt(m[1], 10), supportsRange: true };
+    }
+    if (r.ok) {
+      const len = parseInt(r.headers.get('content-length') || '0', 10);
+      if (len > 1) return { totalSize: len, supportsRange: false };
+    }
+  } catch (e) {
+    if (signal.aborted) throw e;
+  }
+  try {
+    const h = await fetch(url, { method: 'HEAD', credentials: 'include', signal });
+    if (h.ok) return { totalSize: parseInt(h.headers.get('content-length') || '0', 10) || 0, supportsRange: false };
+  } catch (e) {
+    if (signal.aborted) throw e;
+  }
+  return { totalSize: 0, supportsRange: false };
+}
+
+/**
+ * Stream one range into the sink, resuming from the last byte written whenever
+ * the connection drops. Waits out offline periods without burning attempts.
+ */
+async function downloadRange({ url, start, end, signal, sink, onBytes, gate }) {
+  let offset = start;
+  let attempt = 0;
+  while (offset <= end) {
+    try {
+      const res = await fetch(url, {
+        headers: { Range: `bytes=${offset}-${end}` },
+        credentials: 'include',
+        signal
+      });
+      if (res.status !== 206) throw httpError(res.status);
+
+      const reader = res.body.getReader();
+      while (true) {
+        await gate();
+        const { done: rDone, value } = await reader.read();
+        if (rDone) break;
+        await sink.writeAt(offset, value);
+        offset += value.length;
+        onBytes(value.length);
+        attempt = 0; // progress was made; the link is alive
+      }
+      if (offset <= end) throw new Error('Connection closed early');
+    } catch (err) {
+      if (signal.aborted) throw new Error('Cancelled by user');
+      attempt++;
+      if (isPermanentHttp(err, attempt) || attempt >= RANGE_MAX_ATTEMPTS) throw err;
+      await waitForNetwork(signal);
+      await abortableSleep(Math.min(1000 * Math.pow(2, attempt - 1), 20000), signal);
+    }
+  }
+}
+
 async function handleParallelDownload({ id, url, filename }) {
   ensureKeepAlive();
   const abortController = new AbortController();
   const signal = abortController.signal;
-  activeJobs.set(id, { abortController, startTime: Date.now(), filename });
-  syncJobToStorage(id, { filename, percent: 0, status: 'Starting download…' });
+  const job = registerJob(id, filename, abortController);
+  await acquireSlot(job);
+  progress(id, { filename, percent: 0, status: 'Starting download…' }, true);
 
-  let totalSize = 0;
-  let supportsRange = false;
-
-  try {
-    const headRes = await fetch(url, { method: 'HEAD', credentials: 'include', signal });
-    if (headRes.ok) {
-      const len = headRes.headers.get('content-length');
-      if (len) totalSize = parseInt(len, 10);
-      const acc = headRes.headers.get('accept-ranges');
-      if (acc && acc.toLowerCase() === 'bytes') supportsRange = true;
-    }
-  } catch (_) {}
-
-  if (totalSize === 0) {
-    try {
-      const r = await fetch(url, { headers: { Range: 'bytes=0-0' }, credentials: 'include', signal });
-      if (r.status === 206) {
-        supportsRange = true;
-        const cr = r.headers.get('content-range');
-        const m = cr && cr.match(/\/(\d+)\s*$/);
-        if (m) totalSize = parseInt(m[1], 10);
-      }
-    } catch (_) {}
-  }
+  const { totalSize, supportsRange } = await probeRemote(url, signal);
 
   const sink = await createDiskSink(id, null);
-  activeJobs.set(id, { abortController, startTime: Date.now(), filename, sink });
+  job.sink = sink;
   const startTime = Date.now();
+  let received = 0;
+  const gate = () => waitIfPaused(id);
 
-  const report = (received) => {
+  const report = () => {
     const elapsed = (Date.now() - startTime) / 1000;
     const speedMBs = elapsed > 0 ? (received / (1024 * 1024)) / elapsed : 0;
     const percent = totalSize > 0 ? Math.min(99, Math.round((received / totalSize) * 100)) : 0;
+    const etaSeconds = totalSize > 0 && speedMBs > 0
+      ? Math.round((totalSize - received) / (speedMBs * 1024 * 1024))
+      : 0;
     progress(id, {
       filename,
       percent,
       speedMBs: parseFloat(speedMBs.toFixed(2)),
+      etaSeconds,
       status: totalSize > 0
         ? `Downloading ${percent}% (${speedMBs.toFixed(1)} MB/s)`
         : `Downloading ${(received / (1024 * 1024)).toFixed(1)} MB…`
     });
   };
 
-  // Single sequential stream when the server won't do ranges, or the file is
-  // small enough that four connections buy nothing.
-  if (!supportsRange || totalSize < 2 * 1024 * 1024) {
-    const res = await fetch(url, { credentials: 'include', signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  // Progress fires per network read; the popup only needs a few updates a second.
+  let lastReport = 0;
+  const onBytes = (n) => {
+    received += n;
+    const now = Date.now();
+    if (now - lastReport >= 500) { lastReport = now; report(); }
+  };
 
-    const reader = res.body.getReader();
-    let received = 0;
+  if (supportsRange && totalSize >= 2 * 1024 * 1024) {
+    const ranges = [];
+    for (let start = 0; start < totalSize; start += RANGE_CHUNK_BYTES) {
+      ranges.push({ start, end: Math.min(totalSize - 1, start + RANGE_CHUNK_BYTES - 1) });
+    }
+    let next = 0;
+    const worker = async () => {
+      while (next < ranges.length) {
+        await gate();
+        const r = ranges[next++];
+        await downloadRange({ url, start: r.start, end: r.end, signal, sink, onBytes, gate });
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(CONNECTIONS, ranges.length) }, worker));
+  } else {
+    // Server can't do ranges (or the file is tiny): one stream, restarted from
+    // zero if it drops, since there is nothing to resume from.
+    let attempt = 0;
     while (true) {
-      const { done: rDone, value } = await reader.read();
-      if (rDone) break;
-      await sink.write(value);
-      received += value.length;
-      report(received);
+      try {
+        const res = await fetch(url, { credentials: 'include', signal });
+        if (!res.ok) throw httpError(res.status);
+        received = 0;
+        const reader = res.body.getReader();
+        while (true) {
+          await gate();
+          const { done: rDone, value } = await reader.read();
+          if (rDone) break;
+          await sink.writeAt(received, value);
+          onBytes(value.length);
+        }
+        await sink.truncate(received);
+        break;
+      } catch (err) {
+        if (signal.aborted) throw new Error('Cancelled by user');
+        attempt++;
+        if (isPermanentHttp(err, attempt) || attempt >= 4) throw err;
+        await waitForNetwork(signal);
+        await abortableSleep(Math.min(1000 * Math.pow(2, attempt - 1), 20000), signal);
+      }
     }
-
-    const cleanName = (filename || 'download').split('?')[0].split('#')[0];
-    const m = cleanName.match(/\.([a-z0-9]{2,5})$/i) || (url || '').match(/\.([a-z0-9]{2,5})(\?|#|$)/i);
-    const ext = m ? m[1].toLowerCase() : 'mp4';
-    let mimeType = 'video/mp4';
-    if (['jpg', 'jpeg'].includes(ext)) mimeType = 'image/jpeg';
-    else if (ext === 'png') mimeType = 'image/png';
-    else if (ext === 'webp') mimeType = 'image/webp';
-    else if (ext === 'gif') mimeType = 'image/gif';
-    else if (ext === 'svg') mimeType = 'image/svg+xml';
-    else if (ext === 'mp3') mimeType = 'audio/mpeg';
-    else if (ext === 'm4a') mimeType = 'audio/mp4';
-    else if (ext === 'wav') mimeType = 'audio/wav';
-    else if (ext === 'ogg') mimeType = 'audio/ogg';
-    else if (ext === 'webm') mimeType = 'video/webm';
-    else if (ext === 'zip') mimeType = 'application/zip';
-    else if (ext === 'pdf') mimeType = 'application/pdf';
-
-    const out = await sink.close(mimeType);
-    progress(id, { filename: cleanName, percent: 100, status: 'Finalizing…' });
-    handOff(id, out.blob, cleanName, { totalBytes: received }, out.cleanup);
-    return;
-  }
-
-  // Ranged download. Parts are fetched concurrently but written in order, so
-  // only the in-flight window is ever resident rather than the whole file.
-  const CONCURRENCY = 4;
-  const chunkSize = Math.ceil(totalSize / CONCURRENCY);
-  const ranges = [];
-  for (let i = 0; i < CONCURRENCY; i++) {
-    const start = i * chunkSize;
-    const end = Math.min(totalSize - 1, (i + 1) * chunkSize - 1);
-    if (start <= end) ranges.push({ start, end });
-  }
-
-  let received = 0;
-  const partBlobs = new Array(ranges.length);
-
-  await Promise.all(ranges.map(async (r, i) => {
-    const response = await fetch(url, {
-      headers: { Range: `bytes=${r.start}-${r.end}` },
-      credentials: 'include',
-      signal
-    });
-    if (!response.ok && response.status !== 206) {
-      throw new Error(`Chunk ${i} failed with status ${response.status}`);
-    }
-
-    // Blob() spills to disk under memory pressure, unlike a retained
-    // Uint8Array, so parts can be held here until it is their turn to write.
-    const reader = response.body.getReader();
-    const pieces = [];
-    while (true) {
-      const { done: rDone, value } = await reader.read();
-      if (rDone) break;
-      pieces.push(value);
-      received += value.length;
-      report(received);
-    }
-    partBlobs[i] = new Blob(pieces);
-  }));
-
-  for (const part of partBlobs) {
-    await sink.write(await part.arrayBuffer());
   }
 
   const cleanName = (filename || 'download').split('?')[0].split('#')[0];
-  const m = cleanName.match(/\.([a-z0-9]{2,5})$/i) || (url || '').match(/\.([a-z0-9]{2,5})(\?|#|$)/i);
-  const ext = m ? m[1].toLowerCase() : 'mp4';
-  let mimeType = 'video/mp4';
-  if (['jpg', 'jpeg'].includes(ext)) mimeType = 'image/jpeg';
-  else if (ext === 'png') mimeType = 'image/png';
-  else if (ext === 'webp') mimeType = 'image/webp';
-  else if (ext === 'gif') mimeType = 'image/gif';
-  else if (ext === 'svg') mimeType = 'image/svg+xml';
-  else if (ext === 'mp3') mimeType = 'audio/mpeg';
-  else if (ext === 'm4a') mimeType = 'audio/mp4';
-  else if (ext === 'wav') mimeType = 'audio/wav';
-  else if (ext === 'ogg') mimeType = 'audio/ogg';
-  else if (ext === 'webm') mimeType = 'video/webm';
-  else if (ext === 'zip') mimeType = 'application/zip';
-  else if (ext === 'pdf') mimeType = 'application/pdf';
-
-  const out = await sink.close(mimeType);
+  const out = await sink.close(mimeForDownload(cleanName, url));
   progress(id, { filename: cleanName, percent: 100, status: 'Finalizing…' });
   handOff(id, out.blob, cleanName, { totalBytes: received }, out.cleanup);
 }
@@ -393,13 +558,15 @@ async function handleZip({ id, items, filename }) {
   ensureKeepAlive();
   const abortController = new AbortController();
   const signal = abortController.signal;
-  activeJobs.set(id, { abortController, startTime: Date.now(), filename });
+  const job = registerJob(id, filename, abortController);
+  await acquireSlot(job);
 
   const zip = new ZipBuilder();
   let completed = 0;
   const total = (items || []).length;
 
   for (let i = 0; i < total; i++) {
+    await waitIfPaused(id);
     if (signal.aborted) throw new Error('Cancelled by user');
     const it = items[i];
     progress(id, { filename, percent: Math.round((i / total) * 90), status: `Fetching ${i + 1}/${total}…` });
