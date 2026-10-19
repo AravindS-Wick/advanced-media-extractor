@@ -1,0 +1,44 @@
+{
+  "label": "after",
+  "key": "05-tab-state-sync",
+  "title": "Open pages stay in step without a refresh",
+  "pr": 45,
+  "issue": 33,
+  "branch": "HEAD",
+  "sha": "b8b7662",
+  "pass": true,
+  "checks": [
+    {
+      "name": "download started in tab A appears in tab B without refresh",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "cancelling in A removes the card in B without refresh",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "ad-block toggle flipped in popup 1 updates popup 2 live",
+      "pass": true,
+      "detail": "before=true after=false"
+    }
+  ],
+  "notes": [
+    "recordings: recording-1.webm, recording-2.webm, recording-3.webm, recording-4.webm"
+  ],
+  "metrics": {
+    "start_in_A_to_visible_in_B": {
+      "value": 796,
+      "unit": "ms"
+    },
+    "cancel_in_A_to_gone_in_B": {
+      "value": 269,
+      "unit": "ms"
+    },
+    "adblock_toggle_popup1_to_popup2": {
+      "value": 125,
+      "unit": "ms"
+    }
+  }
+}

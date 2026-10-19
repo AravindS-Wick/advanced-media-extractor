@@ -1,0 +1,52 @@
+{
+  "label": "after",
+  "key": "06-history-restart-open-page",
+  "title": "History keeps source link + page; Restart and Open page work",
+  "pr": 46,
+  "issue": 34,
+  "branch": "HEAD",
+  "sha": "600ba1c",
+  "pass": true,
+  "checks": [
+    {
+      "name": "download completed",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "history entry stores pageUrl",
+      "pass": true,
+      "detail": "http://127.0.0.1:12487/"
+    },
+    {
+      "name": "history entry stores sourceUrl",
+      "pass": true,
+      "detail": "http://127.0.0.1:12487/big/hist1.bin?size=1048576"
+    },
+    {
+      "name": "Restart button is shown",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "Open page button is shown",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "Open page opens the saved source page in a new tab",
+      "pass": true,
+      "detail": "http://127.0.0.1:12487/"
+    },
+    {
+      "name": "Restart re-requests the saved link",
+      "pass": true,
+      "detail": "2 -> 3"
+    }
+  ],
+  "notes": [
+    "history item: {\"id\":\"dl_1\",\"downloadId\":1,\"filename\":\"6ca4c647-72e5-457a-aac2-361b55c9a356\",\"savePath\":\"C:\\\\Users\\\\ARAVIN~1\\\\AppData\\\\Local\\\\Temp\\\\playwright-artifacts-9UN5hc\\\\6ca4c647-72e5-457a-aac2-361b55c9a356\",\"url\":\"blob:chrome-extension://nofjfgehjldnnplbmccgbjmekpcfdiaa/9fa02f68-219e-44ab-937b-31c2abee1c5a\",\"finalUrl\":\"blob:chrome-extension://nofjfgehjldnnplbmccgbjmekpcfdiaa/9fa02f68-219e-44ab-937b-31c2abee1c5a\",\"referrer\":\"\",\"domain\":\"\",\"pageTitle\":\"\",\"sourceUrl\":\"http://127.0.0.1:12487/big/hist1.bin?size=1048576\",\"pageUrl\":\"http://127.0.0.1:12487/\",\"kind\":\"file\",\"preferredQuality\":\"\",\"mime\":\"video/mp4\",\"type\":\"direct\",\"totalBytes\":1048576,\"startTime\":1792400915523,\"completedAt\":1792400915679,\"date\":\"2026-10-19\",\"state\":\"complete\",\"error\":null,\"updatedAt\":1792400915679}",
+    "recordings: recording-1.webm, recording-2.webm"
+  ],
+  "metrics": {}
+}

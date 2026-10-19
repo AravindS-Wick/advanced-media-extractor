@@ -1,0 +1,56 @@
+PASS tests/history-actions.test.js
+  HistoryActions
+    √ offers Restart only when a web source URL was kept (5 ms)
+    √ offers Open page only for http(s) page URLs
+    √ restarts HLS entries as a MUX_HLS job with the saved quality (1 ms)
+
+PASS tests/stall-watchdog.test.js
+  HlsDownloader stall watchdog
+    √ abandons a connection that goes silent and retries on a fresh one (7 ms)
+    √ does not treat a user abort as a stall (12 ms)
+
+PASS tests/extractor.test.js
+  ZipBuilder Unit Tests
+    √ creates a valid uncompressed ZIP blob (6 ms)
+    √ handles multiple files in ZipBuilder
+  Filename & Resolution Helper Tests
+    √ detects resolution from Dailymotion variant URLs (1 ms)
+    √ cleans page titles for filesystem safety
+    √ calculates video stream size correctly from bitrate & duration (1 ms)
+  HlsDownloader & Playlist Parsing Unit Tests
+    √ parses HLS master playlist into sorted variant cards (1 ms)
+    √ parses fMP4 media playlist with exact EXTINF duration calculation (1 ms)
+    √ parses subtitle/CC renditions declared via EXT-X-MEDIA:TYPE=SUBTITLES (2 ms)
+    √ ignores playlists with no subtitle renditions (1 ms)
+    √ parses standard MPEG-TS media playlist
+    √ initializes HlsDownloader instance with default options
+  Per-Domain Ad Blocker Unit Tests
+    √ normalizes URLs and hostnames to clean base domains (1 ms)
+    √ checks domain match against disabled list with subdomain support
+    √ generates deterministic dynamic rule IDs within valid DNR bounds
+  Video Player & Downloads Manager Formatting Tests
+    √ formats player time in mm:ss and hh:mm:ss
+    √ formats download timestamps into human-readable relative strings (1 ms)
+  Instagram Extraction & Universal Preview Tests
+    √ normalizes Instagram CDN chunk URLs by stripping bytestart and byteend
+    √ preserves non-Instagram URLs without modification
+    √ generates correct filenames for video, audio, image, and doc in universal preview player
+    √ strips browser notification badges from tab titles and extracts reel codes
+    √ filters silent video-only streams from Videos category so all videos have audio
+    √ correctly classifies Instagram audio.mp4 streams as audio and assigns .mp3 extension (1 ms)
+
+PASS tests/service-worker.flow.test.js (5.324 s)
+  service worker download tracking
+    √ a native download is listed while running, then moves to history (452 ms)
+    √ a late progress update cannot resurrect a finished download (392 ms)
+    √ offscreen job progress shows up in the Active list and is dropped when done (1299 ms)
+    √ late progress from the engine cannot resurrect a cancelled or finished job (1861 ms)
+    √ incognito downloads are visible this session but never persisted (442 ms)
+    √ jobs started from an incognito window are shown but kept out of local storage (379 ms)
+
+A worker process has failed to exit gracefully and has been force exited. This is likely caused by tests leaking due to improper teardown. Try running with --detectOpenHandles to find leaks. Active timers can also cause this, ensure that .unref() was called on them.
+Test Suites: 4 passed, 4 total
+Tests:       33 passed, 33 total
+Snapshots:   0 total
+Time:        6.351 s
+Ran all test suites.

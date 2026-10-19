@@ -1,0 +1,47 @@
+{
+  "label": "before",
+  "key": "06-history-restart-open-page",
+  "title": "History keeps source link + page; Restart and Open page work",
+  "pr": 46,
+  "issue": 34,
+  "branch": "HEAD",
+  "sha": "6a830c3",
+  "pass": false,
+  "checks": [
+    {
+      "name": "download completed",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "history entry stores pageUrl",
+      "pass": false,
+      "detail": ""
+    },
+    {
+      "name": "history entry stores sourceUrl",
+      "pass": false,
+      "detail": "blob:chrome-extension://oalnghkmgppgddchmfhlkkmbgakggnbm/e7619a6f-3d2d-40e1-bfaf-baf68734293c"
+    },
+    {
+      "name": "Restart button is shown",
+      "pass": false,
+      "detail": ""
+    },
+    {
+      "name": "Open page button is shown",
+      "pass": false,
+      "detail": ""
+    },
+    {
+      "name": "scenario ran without exception",
+      "pass": false,
+      "detail": "locator.click: Timeout 8000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.page-btn').first()\u001b[22m\n"
+    }
+  ],
+  "notes": [
+    "history item: {\"id\":\"dl_1\",\"downloadId\":1,\"filename\":\"46345e20-e70b-4f53-99b0-ac8c35e4f91d\",\"savePath\":\"C:\\\\Users\\\\ARAVIN~1\\\\AppData\\\\Local\\\\Temp\\\\playwright-artifacts-VJ4v2w\\\\46345e20-e70b-4f53-99b0-ac8c35e4f91d\",\"url\":\"blob:chrome-extension://oalnghkmgppgddchmfhlkkmbgakggnbm/e7619a6f-3d2d-40e1-bfaf-baf68734293c\",\"finalUrl\":\"blob:chrome-extension://oalnghkmgppgddchmfhlkkmbgakggnbm/e7619a6f-3d2d-40e1-bfaf-baf68734293c\",\"referrer\":\"\",\"domain\":\"\",\"pageTitle\":\"\",\"mime\":\"video/mp4\",\"type\":\"direct\",\"totalBytes\":1048576,\"startTime\":1792400941118,\"completedAt\":1792400941265,\"date\":\"2026-10-19\",\"state\":\"complete\",\"error\":null,\"updatedAt\":1792400941265}",
+    "recordings: recording-1.webm"
+  ],
+  "metrics": {}
+}

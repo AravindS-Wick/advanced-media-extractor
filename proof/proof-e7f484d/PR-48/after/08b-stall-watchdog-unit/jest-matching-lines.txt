@@ -1,0 +1,2 @@
+PASS tests/stall-watchdog.test.js
+    √ does not treat a user abort as a stall (12 ms)

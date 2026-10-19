@@ -1,0 +1,31 @@
+{
+  "label": "before",
+  "key": "03-downloads-list-controls",
+  "title": "Downloads list shows a live card with Pause / Resume / Cancel buttons",
+  "pr": 43,
+  "issue": 31,
+  "branch": "HEAD",
+  "sha": "7a4d7b9",
+  "pass": false,
+  "checks": [
+    {
+      "name": "active card appears",
+      "pass": false,
+      "detail": ""
+    },
+    {
+      "name": "card has Pause and Cancel buttons",
+      "pass": false,
+      "detail": ""
+    },
+    {
+      "name": "scenario ran without exception",
+      "pass": false,
+      "detail": "locator.click: Timeout 8000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.pause-job-btn').first()\u001b[22m\n"
+    }
+  ],
+  "notes": [
+    "recordings: recording-1.webm"
+  ],
+  "metrics": {}
+}

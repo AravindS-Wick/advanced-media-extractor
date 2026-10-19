@@ -1,0 +1,36 @@
+{
+  "label": "after",
+  "key": "08-stalled-connection-watchdog",
+  "title": "A connection that goes silent is dropped and re-fetched",
+  "pr": 48,
+  "issue": 36,
+  "branch": "HEAD",
+  "sha": "24b9e50",
+  "pass": true,
+  "checks": [
+    {
+      "name": "download finishes despite hung connections (watchdog fired)",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "server saw reconnects: probe + 3 ranges + at least 3 re-fetches",
+      "pass": true,
+      "detail": "7 requests"
+    }
+  ],
+  "notes": [
+    "Unit proof: tests/stall-watchdog.test.js (see 08b folder). Live check uses a server that goes silent mid-body on the first request of each range.",
+    "recordings: recording-1.webm"
+  ],
+  "metrics": {
+    "time_to_complete_with_stall": {
+      "value": 53747,
+      "unit": "ms"
+    },
+    "requests_to_server": {
+      "value": 7,
+      "unit": "req"
+    }
+  }
+}

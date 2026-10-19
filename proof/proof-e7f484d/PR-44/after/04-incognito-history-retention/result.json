@@ -1,0 +1,32 @@
+{
+  "label": "after",
+  "key": "04-incognito-history-retention",
+  "title": "History retention setting (+ incognito rule via unit tests)",
+  "pr": 44,
+  "issue": 32,
+  "branch": "HEAD",
+  "sha": "0842abf",
+  "pass": true,
+  "checks": [
+    {
+      "name": "a normal download is recorded when retention = forever",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "retention setting offers forever / 1y / 90d / 30d / 7d / never",
+      "pass": true,
+      "detail": "Forever | 1 year | 90 days | 30 days | 7 days | Don't keep history"
+    },
+    {
+      "name": "\"Don't keep history\" clears stored history",
+      "pass": true,
+      "detail": "0"
+    }
+  ],
+  "notes": [
+    "Incognito suppression cannot be driven by Playwright (no incognito window with extensions); it is covered by tests/service-worker.flow.test.js - see jest-output.txt.",
+    "recordings: recording-1.webm, recording-2.webm"
+  ],
+  "metrics": {}
+}

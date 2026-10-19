@@ -1,0 +1,50 @@
+{
+  "label": "after",
+  "key": "03-downloads-list-controls",
+  "title": "Downloads list shows a live card with Pause / Resume / Cancel buttons",
+  "pr": 43,
+  "issue": 31,
+  "branch": "HEAD",
+  "sha": "4f608a2",
+  "pass": true,
+  "checks": [
+    {
+      "name": "active card appears",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "card has Pause and Cancel buttons",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "button flips to Resume after pause",
+      "pass": true,
+      "detail": "▶ Resume"
+    },
+    {
+      "name": "button flips back to Pause after resume",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "card removed after Cancel",
+      "pass": true,
+      "detail": ""
+    }
+  ],
+  "notes": [
+    "recordings: recording-1.webm"
+  ],
+  "metrics": {
+    "pause_click_to_Resume_label": {
+      "value": 262,
+      "unit": "ms"
+    },
+    "cancel_click_to_card_removed": {
+      "value": 4,
+      "unit": "ms"
+    }
+  }
+}

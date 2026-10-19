@@ -1,0 +1,64 @@
+{
+  "label": "before",
+  "key": "07-queue-pause-frees-slot",
+  "title": "Pause frees a slot so the next queued download starts; cancel clears queued jobs",
+  "pr": 47,
+  "issue": 35,
+  "branch": "HEAD",
+  "sha": "995a713",
+  "pass": false,
+  "checks": [
+    {
+      "name": "limit 3: 3 running, 2 queued",
+      "pass": true,
+      "detail": "{\"dl_q1\":\"running:7%\",\"dl_q2\":\"running:7%\",\"dl_q3\":\"running:7%\",\"dl_q4\":\"queued:0%\",\"dl_q5\":\"queued:0%\"}"
+    },
+    {
+      "name": "#3 shows paused",
+      "pass": true,
+      "detail": "paused:8%"
+    },
+    {
+      "name": "#4 started once #3 was paused",
+      "pass": false,
+      "detail": "queued:0%"
+    },
+    {
+      "name": "#5 still queued",
+      "pass": true,
+      "detail": "queued:0%"
+    },
+    {
+      "name": "resumed #3 re-acquires a slot or waits Queued (never stuck paused)",
+      "pass": true,
+      "detail": "running:9%"
+    },
+    {
+      "name": "cancelled queued job disappears",
+      "pass": true,
+      "detail": "{\"dl_q1\":\"running:23%\",\"dl_q2\":\"running:28%\",\"dl_q3\":\"running:9%\",\"dl_q4\":\"queued:0%\"}"
+    }
+  ],
+  "notes": [
+    "after start: {\"dl_q1\":\"running:7%\",\"dl_q2\":\"running:7%\",\"dl_q3\":\"running:7%\",\"dl_q4\":\"queued:0%\",\"dl_q5\":\"queued:0%\"}",
+    "after pausing #3: {\"dl_q1\":\"running:23%\",\"dl_q2\":\"running:27%\",\"dl_q3\":\"paused:8%\",\"dl_q4\":\"queued:0%\",\"dl_q5\":\"queued:0%\"}",
+    "after resuming #3: {\"dl_q1\":\"running:23%\",\"dl_q2\":\"running:28%\",\"dl_q3\":\"running:9%\",\"dl_q4\":\"queued:0%\",\"dl_q5\":\"queued:0%\"}",
+    "after cancelling queued #5: {\"dl_q1\":\"running:23%\",\"dl_q2\":\"running:28%\",\"dl_q3\":\"running:9%\",\"dl_q4\":\"queued:0%\"}",
+    "leftover jobs after cancel-all (a ghost here is the bug fixed in PR #51, asserted in scenario 11): {}",
+    "recordings: recording-1.webm"
+  ],
+  "metrics": {
+    "pause_to_next_download_starts": {
+      "value": null,
+      "unit": "ms"
+    },
+    "resume_to_not_paused": {
+      "value": 3,
+      "unit": "ms"
+    },
+    "cancel_queued_to_gone": {
+      "value": 9,
+      "unit": "ms"
+    }
+  }
+}

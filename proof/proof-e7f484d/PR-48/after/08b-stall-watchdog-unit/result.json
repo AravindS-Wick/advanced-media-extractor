@@ -1,0 +1,24 @@
+{
+  "key": "08b-stall-watchdog-unit",
+  "title": "Stall watchdog unit tests",
+  "pr": 48,
+  "issue": 36,
+  "branch": "HEAD",
+  "sha": "24b9e50",
+  "pass": true,
+  "checks": [
+    {
+      "name": "jest suite green",
+      "pass": true,
+      "detail": "Tests:       33 passed, 33 total"
+    },
+    {
+      "name": "relevant tests ran",
+      "pass": true,
+      "detail": "2 matching lines"
+    }
+  ],
+  "notes": [
+    "Mock-chrome service-worker flow tests; real incognito cannot be automated."
+  ]
+}
