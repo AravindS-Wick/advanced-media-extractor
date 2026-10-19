@@ -654,13 +654,99 @@ async function syncDomainAllowRules(disabledDomains) {
   });
 }
 
+// ── Private (incognito) downloads ──
+// Anything started from an incognito window is never written to history or to
+// storage.local. Ids (job ids and "dl_<chromeDownloadId>") live in
+// storage.session only, so they survive worker restarts but not the browser.
+const PRIVATE_IDS_KEY = 'privateIds';
+const privateIds = new Set();
+const privatePending = new Map();
+const privateReady = (async () => {
+  try {
+    const r = await chrome.storage.session.get(PRIVATE_IDS_KEY);
+    (r[PRIVATE_IDS_KEY] || []).forEach((id) => privateIds.add(id));
+  } catch (_) {}
+})();
+
+function persistPrivateIds() {
+  try { chrome.storage.session.set({ [PRIVATE_IDS_KEY]: [...privateIds].slice(-500) }).catch(() => {}); } catch (_) {}
+}
+
+function markPrivate(id) {
+  if (!id) return;
+  privateIds.add(String(id));
+  persistPrivateIds();
+}
+
+async function isPrivate(...ids) {
+  await privateReady;
+  for (const id of ids) {
+    if (!id) continue;
+    const pending = privatePending.get(String(id));
+    if (pending) await pending;
+    if (privateIds.has(String(id))) return true;
+  }
+  return false;
+}
+
+// A job-start message from an incognito tab, or from an extension page opened
+// in an incognito window (popup / grabber have no sender.tab for the popup).
+function trackPrivateJob(id, sender) {
+  if (!id) return;
+  if (sender && sender.tab) {
+    if (sender.tab.incognito) markPrivate(id);
+    return;
+  }
+  const p = chrome.windows.getLastFocused()
+    .then((w) => { if (w && w.incognito) markPrivate(id); })
+    .catch(() => {})
+    .finally(() => privatePending.delete(String(id)));
+  privatePending.set(String(id), p);
+}
+
 // Persistent Download State Helpers (Powered by IndexedDB).
 // Module scope on purpose: the chrome.downloads listeners further down call
 // these too, and when they lived inside the onMessage handler every native
 // download event threw a ReferenceError, so direct downloads never reached the
 // Active list or History.
+// History retention: 0 = keep forever (default), -1 = don't keep history,
+// N > 0 = delete entries older than N days.
+async function getRetentionDays() {
+  const { historyRetentionDays } = await chrome.storage.local.get('historyRetentionDays');
+  const n = parseInt(historyRetentionDays, 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
+let lastPruneAt = 0;
+async function pruneHistory(force) {
+  if (!force && Date.now() - lastPruneAt < 6 * 60 * 60 * 1000) return;
+  lastPruneAt = Date.now();
+  try {
+    const days = await getRetentionDays();
+    if (days === 0) return;
+    if (days < 0) {
+      await DownloadDB.clearAll();
+      await chrome.storage.local.set({ downloadHistory: [] });
+      return;
+    }
+    const cutoff = Date.now() - days * 86400000;
+    await DownloadDB.pruneOlderThan(cutoff);
+    const { downloadHistory } = await chrome.storage.local.get('downloadHistory');
+    if (Array.isArray(downloadHistory)) {
+      await chrome.storage.local.set({
+        downloadHistory: downloadHistory.filter((h) => (h.completedAt || h.startTime || 0) >= cutoff)
+      });
+    }
+  } catch (e) {
+    console.error('pruneHistory error:', e);
+  }
+}
+
 async function updateDownloadHistory(entry) {
   try {
+    if (await isPrivate(entry.id, entry.downloadId && 'dl_' + entry.downloadId)) return;
+    if ((await getRetentionDays()) < 0) return;
+    pruneHistory(false);
     if (typeof DownloadDB !== 'undefined' && DownloadDB.saveDownload) {
       await DownloadDB.saveDownload(entry);
     }
@@ -680,6 +766,7 @@ async function updateDownloadHistory(entry) {
 
 async function updateActiveDownload(id, data) {
   try {
+    if (data && await isPrivate(id)) return;
     const res = await chrome.storage.local.get(['activeDownloads']);
     const active = res.activeDownloads || {};
     if (data) {
@@ -710,7 +797,8 @@ function mutateJobs(fn) {
   return jobWriteChain;
 }
 
-function recordJobProgress(m) {
+async function recordJobProgress(m) {
+  if (await isPrivate(m.id)) return;
   return mutateJobs((jobs) => {
     const prev = jobs[m.id] || {};
     jobs[m.id] = {
@@ -874,7 +962,10 @@ async function installJobHeaderRule(jobId, mediaUrl, pageUrl) {
   }
 }
 
+const JOB_START_TYPES = new Set(['MUX_HLS', 'DOWNLOAD_PARALLEL', 'DOWNLOAD_STREAM', 'BUILD_ZIP']);
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message && message.id && JOB_START_TYPES.has(message.type)) trackPrivateJob(message.id, sender);
   if (message.type === 'MUX_PROGRESS' && message.id) { recordJobProgress(message); return false; }
   if (message.type === 'MUX_DONE' && message.id) { dropJob(message.id); return false; }
 
@@ -1027,6 +1118,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
 
+      if (await isPrivate(message.id)) markPrivate('dl_' + downloadId);
       const blobSaves = await readSession(BLOB_SAVES_KEY);
       blobSaves[downloadId] = message.id;
       await writeSession(BLOB_SAVES_KEY, blobSaves);
@@ -1792,6 +1884,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'SET_HISTORY_RETENTION') {
+    const days = parseInt(message.days, 10);
+    chrome.storage.local.set({ historyRetentionDays: Number.isFinite(days) ? days : 0 }, () => {
+      pruneHistory(true).then(() => {
+        chrome.runtime.sendMessage({ type: 'DOWNLOAD_HISTORY_UPDATED' }).catch(() => {});
+        sendResponse({ ok: true });
+      });
+    });
+    return true;
+  }
+
   if (message.type === 'CLEAR_DOWNLOAD_HISTORY') {
     (async () => {
       try {
@@ -1905,6 +2008,7 @@ async function onDownloadFinished(downloadId) {
 chrome.downloads.onCreated.addListener((downloadItem) => {
   if (!downloadItem || !downloadItem.id) return;
   const id = 'dl_' + downloadItem.id;
+  if (downloadItem.incognito) { markPrivate(id); return; }
   const rawName = downloadItem.filename ? downloadItem.filename.split(/[\\/]/).pop() : (downloadItem.url ? downloadItem.url.split('/').pop().split('?')[0] : 'download');
   const type = EXT_VIDEO.test(rawName) ? 'video' : EXT_AUDIO.test(rawName) ? 'audio' : EXT_DOC.test(rawName) ? 'doc' : 'file';
 
@@ -1934,6 +2038,12 @@ chrome.downloads.onChanged.addListener((delta) => {
   const id = 'dl_' + delta.id;
   chrome.storage.local.get(['activeDownloads'], async (res) => {
     const active = res.activeDownloads || {};
+    if (await isPrivate(id)) return;
+    if (!active[id]) {
+      // Not seen via onCreated (worker restarted): ask Chrome whether it is incognito.
+      const found = await new Promise((r) => chrome.downloads.search({ id: delta.id }, r));
+      if (found && found[0] && found[0].incognito) { markPrivate(id); return; }
+    }
     const item = active[id] || {
       id,
       downloadId: delta.id,
@@ -2091,7 +2201,9 @@ async function initDownloadTracking() {
       if (existing.stats && existing.stats.totalCount === 0) {
         chrome.downloads.search({ state: 'complete', limit: 100 }, async (items) => {
           if (Array.isArray(items)) {
+            await privateReady;
             for (const it of items) {
+              if (it.incognito || await isPrivate('dl_' + it.id)) continue;
               const filename = it.filename ? it.filename.split(/[\\/]/).pop() : 'download';
               const completedAt = it.endTime ? new Date(it.endTime).getTime() : (it.startTime ? new Date(it.startTime).getTime() : Date.now());
               const type = EXT_VIDEO.test(filename) ? 'video' : EXT_AUDIO.test(filename) ? 'audio' : EXT_DOC.test(filename) ? 'doc' : 'file';
@@ -2114,23 +2226,33 @@ async function initDownloadTracking() {
       }
     }
 
+    await pruneHistory(true);
     await sweepOrphanHeaderRules();
     await seedHeaderRuleCounter();
     await recoverAfterRestart();
 
     // Re-sync any active in-progress downloads
-    chrome.downloads.search({ state: 'in_progress' }, (items) => {
+    chrome.downloads.search({ state: 'in_progress' }, async (items) => {
       if (Array.isArray(items)) {
-        chrome.storage.local.get(['activeDownloads'], (res) => {
+        // Chrome does not reliably flag the extension's own downloads as
+        // incognito, so privacy is decided by privateIds (persisted in
+        // storage.session), not item.incognito alone. Without privateReady a
+        // service-worker restart mid private download would write its filename,
+        // path and URL into persistent storage.local (disk) — a privacy leak.
+        await privateReady;
+        const res = await chrome.storage.local.get(['activeDownloads']);
+        {
           const active = res.activeDownloads || {};
           // Entries for native downloads Chrome no longer reports as running
           // are leftovers from before a restart; they would show a frozen bar forever.
+          // Also purge any private entry a previous version may have persisted.
           const running = new Set(items.map(i => 'dl_' + i.id));
           for (const key of Object.keys(active)) {
-            if (key.startsWith('dl_') && !running.has(key)) delete active[key];
+            if (key.startsWith('dl_') && (!running.has(key) || await isPrivate(key))) delete active[key];
           }
           for (const item of items) {
             const id = 'dl_' + item.id;
+            if (item.incognito || await isPrivate(id)) continue;
             const filename = item.filename ? item.filename.split(/[\\/]/).pop() : 'Download';
             active[id] = {
               id,
@@ -2147,7 +2269,7 @@ async function initDownloadTracking() {
             };
           }
           chrome.storage.local.set({ activeDownloads: active });
-        });
+        }
       }
     });
   } catch (err) {
