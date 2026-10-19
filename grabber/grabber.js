@@ -2,6 +2,7 @@
 const params = new URLSearchParams(location.search);
 const tabId = parseInt(params.get('tabId'), 10);
 const pageUrlParam = params.get('url') || '';
+const tabUrl = pageUrlParam;
 
 let items = [];
 let activeCat = 'all';
