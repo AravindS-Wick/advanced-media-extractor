@@ -727,10 +727,12 @@ async function pruneHistory(force) {
     if (days < 0) {
       await DownloadDB.clearAll();
       await chrome.storage.local.set({ downloadHistory: [] });
+      await clearJobSources();
       return;
     }
     const cutoff = Date.now() - days * 86400000;
     await DownloadDB.pruneOlderThan(cutoff);
+    await pruneJobSources(cutoff);
     const { downloadHistory } = await chrome.storage.local.get('downloadHistory');
     if (Array.isArray(downloadHistory)) {
       await chrome.storage.local.set({
@@ -754,6 +756,9 @@ function saveJobSource(key, ctx) {
   sourceWriteChain = sourceWriteChain.then(async () => {
     try {
       if (await isPrivate(key)) return;
+      // Honour history retention: "Don't keep history" (-1) must not leave a
+      // trail of visited URLs/pages on disk either.
+      if ((await getRetentionDays()) < 0) return;
       const r = await chrome.storage.local.get(JOB_SOURCES_KEY);
       const all = r[JOB_SOURCES_KEY] || {};
       all[key] = { ...ctx, savedAt: Date.now() };
@@ -775,6 +780,22 @@ async function getJobSource(...keys) {
   for (const k of keys) if (k && all[k]) return all[k];
   return null;
 }
+
+// jobSources is history too, so retention / Clear history / erase must reach it
+// — otherwise visited URLs and page titles linger on disk after the user clears.
+function mutateJobSources(fn) {
+  sourceWriteChain = sourceWriteChain.then(async () => {
+    try {
+      const r = await chrome.storage.local.get(JOB_SOURCES_KEY);
+      const all = r[JOB_SOURCES_KEY] || {};
+      if (fn(all) !== false) await chrome.storage.local.set({ [JOB_SOURCES_KEY]: all });
+    } catch (_) {}
+  });
+  return sourceWriteChain;
+}
+const clearJobSources = () => mutateJobSources((all) => { Object.keys(all).forEach((k) => delete all[k]); });
+const removeJobSources = (...keys) => mutateJobSources((all) => { keys.forEach((k) => { if (k) delete all[k]; }); });
+const pruneJobSources = (cutoff) => mutateJobSources((all) => { Object.keys(all).forEach((k) => { if ((all[k].savedAt || 0) < cutoff) delete all[k]; }); });
 
 async function updateDownloadHistory(entry) {
   try {
@@ -1967,6 +1988,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           await DownloadDB.clearAll();
         }
         await chrome.storage.local.set({ downloadHistory: [] });
+        await clearJobSources();
         sendResponse({ ok: true });
       } catch (e) {
         sendResponse({ ok: false, error: e.message });
@@ -1986,6 +2008,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         let history = res.downloadHistory || [];
         history = history.filter(h => h.id !== id && (!downloadId || h.downloadId !== downloadId));
         await chrome.storage.local.set({ downloadHistory: history });
+        await removeJobSources(id, downloadId ? 'dl_' + downloadId : null);
 
         if (downloadId) {
           chrome.downloads.erase({ id: downloadId }, () => {
