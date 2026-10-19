@@ -32,6 +32,10 @@ function loadServiceWorker(opts = {}) {
   const dnrRules = (opts.dynamicRules || []).slice();
   const dnrCalls = [];
   const sessionStore = asyncStore(opts.sessionSetDelayMs || 0);
+  if (opts.sessionInit) Object.assign(sessionStore._data, opts.sessionInit);
+  const localStore = asyncStore();
+  if (opts.localInit) Object.assign(localStore._data, opts.localInit);
+  const downloadsByState = opts.downloads || {}; // { in_progress: [...], complete: [...] }
 
   const chrome = {
     runtime: {
@@ -40,7 +44,7 @@ function loadServiceWorker(opts = {}) {
       sendMessage: () => Promise.resolve(), connect: () => ({ onDisconnect: evt(), postMessage() {}, disconnect() {} }),
       getURL: (p) => 'chrome-extension://ext-id/' + p
     },
-    storage: { local: asyncStore(), session: sessionStore, onChanged: evt() },
+    storage: { local: localStore, session: sessionStore, onChanged: evt() },
     declarativeNetRequest: {
       getDynamicRules: () => Promise.resolve(dnrRules.slice()),
       getSessionRules: () => Promise.resolve([]),
@@ -49,7 +53,7 @@ function loadServiceWorker(opts = {}) {
       updateEnabledRulesets: () => Promise.resolve()
     },
     downloads: {
-      search: (q, cb) => { if (cb) cb([]); return Promise.resolve([]); },
+      search: (q, cb) => { const out = (q && downloadsByState[q.state]) || []; if (cb) cb(out); return Promise.resolve(out); },
       download: (o, cb) => { if (cb) cb(1); }, cancel() {}, erase() {}, pause() {}, resume() {}, open() {}, show() {},
       onCreated: evt(), onChanged: evt(), onErased: evt()
     },
@@ -75,17 +79,33 @@ function loadServiceWorker(opts = {}) {
   const context = vm.createContext(sandbox);
   // service-worker.js pulls in its libs via importScripts; load each into the
   // same context so their globals (e.g. the download DB) are available.
+  const dbItems = opts.dbItems || [];
   sandbox.importScripts = (...files) => {
     for (const f of files) {
+      // download-db.js is an IndexedDB engine with no equivalent in the vm; swap
+      // in an in-memory stub so service-worker code paths that touch it run.
+      if (/download-db/.test(f)) {
+        sandbox.DownloadDB = {
+          init: async () => {},
+          queryDownloads: async () => ({ items: dbItems.slice(), stats: { totalCount: dbItems.length } }),
+          saveDownload: async (d) => { dbItems.push(d); },
+          eraseDownload: async () => {},
+          pruneOlderThan: async () => {},
+          clearAll: async () => { dbItems.length = 0; }
+        };
+        continue;
+      }
       const code = fs.readFileSync(path.join(root, f), 'utf8');
       vm.runInContext(code, context, { filename: f });
     }
   };
 
   let src = fs.readFileSync(path.join(root, 'service-worker.js'), 'utf8');
-  src += '\n;globalThis.__sw = { holdHeaderRule, releaseHeldRule, readHeldRules, seedHeaderRuleCounter, nextHeaderRuleId };';
+  src += '\n;globalThis.__sw = { holdHeaderRule, releaseHeldRule, readHeldRules, seedHeaderRuleCounter, nextHeaderRuleId,'
+    + ' initDownloadTracking, isPrivate, markPrivate, getRetentionDays, pruneHistory, updateDownloadHistory,'
+    + ' privateReady: (typeof privateReady !== "undefined" ? privateReady : null) };';
   vm.runInContext(src, context, { filename: 'service-worker.js' });
-  return { sw: sandbox.__sw, chrome, dnrRules, dnrCalls, sessionStore };
+  return { sw: sandbox.__sw, chrome, dnrRules, dnrCalls, sessionStore, localStore };
 }
 
 module.exports = { loadServiceWorker };

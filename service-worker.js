@@ -2201,8 +2201,9 @@ async function initDownloadTracking() {
       if (existing.stats && existing.stats.totalCount === 0) {
         chrome.downloads.search({ state: 'complete', limit: 100 }, async (items) => {
           if (Array.isArray(items)) {
+            await privateReady;
             for (const it of items) {
-              if (it.incognito) continue;
+              if (it.incognito || await isPrivate('dl_' + it.id)) continue;
               const filename = it.filename ? it.filename.split(/[\\/]/).pop() : 'download';
               const completedAt = it.endTime ? new Date(it.endTime).getTime() : (it.startTime ? new Date(it.startTime).getTime() : Date.now());
               const type = EXT_VIDEO.test(filename) ? 'video' : EXT_AUDIO.test(filename) ? 'audio' : EXT_DOC.test(filename) ? 'doc' : 'file';
@@ -2231,19 +2232,27 @@ async function initDownloadTracking() {
     await recoverAfterRestart();
 
     // Re-sync any active in-progress downloads
-    chrome.downloads.search({ state: 'in_progress' }, (items) => {
+    chrome.downloads.search({ state: 'in_progress' }, async (items) => {
       if (Array.isArray(items)) {
-        chrome.storage.local.get(['activeDownloads'], (res) => {
+        // Chrome does not reliably flag the extension's own downloads as
+        // incognito, so privacy is decided by privateIds (persisted in
+        // storage.session), not item.incognito alone. Without privateReady a
+        // service-worker restart mid private download would write its filename,
+        // path and URL into persistent storage.local (disk) — a privacy leak.
+        await privateReady;
+        const res = await chrome.storage.local.get(['activeDownloads']);
+        {
           const active = res.activeDownloads || {};
           // Entries for native downloads Chrome no longer reports as running
           // are leftovers from before a restart; they would show a frozen bar forever.
+          // Also purge any private entry a previous version may have persisted.
           const running = new Set(items.map(i => 'dl_' + i.id));
           for (const key of Object.keys(active)) {
-            if (key.startsWith('dl_') && !running.has(key)) delete active[key];
+            if (key.startsWith('dl_') && (!running.has(key) || await isPrivate(key))) delete active[key];
           }
           for (const item of items) {
-            if (item.incognito) continue;
             const id = 'dl_' + item.id;
+            if (item.incognito || await isPrivate(id)) continue;
             const filename = item.filename ? item.filename.split(/[\\/]/).pop() : 'Download';
             active[id] = {
               id,
@@ -2260,7 +2269,7 @@ async function initDownloadTracking() {
             };
           }
           chrome.storage.local.set({ activeDownloads: active });
-        });
+        }
       }
     });
   } catch (err) {
