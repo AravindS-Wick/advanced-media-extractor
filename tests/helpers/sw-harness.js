@@ -33,7 +33,7 @@ function loadServiceWorker(opts = {}) {
   const dnrCalls = [];
   const sessionStore = asyncStore(opts.sessionSetDelayMs || 0);
   if (opts.sessionInit) Object.assign(sessionStore._data, opts.sessionInit);
-  const localStore = asyncStore();
+  const localStore = asyncStore(opts.localSetDelayMs || 0);
   if (opts.localInit) Object.assign(localStore._data, opts.localInit);
   const downloadsByState = opts.downloads || {}; // { in_progress: [...], complete: [...] }
 

@@ -2001,7 +2001,7 @@ function setupDownloadsSync(refresh) {
     if (changes.maxConcurrentJobs) syncSelect(changes.maxConcurrentJobs.newValue);
     if (changes.activeDownloadJobs || changes.activeDownloads || changes.downloadHistory) {
       if (t) return;
-      t = setTimeout(() => { t = null; refresh(); }, 600);
+      t = setTimeout(() => { t = null; refresh(); }, 250);
     }
   });
 }
