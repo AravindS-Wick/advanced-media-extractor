@@ -9,13 +9,22 @@ let activeCat = 'all';
 let pageTitleVal = '';
 let searchQuery = '';
 const muxJobs = {};
+let dlRefreshTimer = null;
 
 // Progress/result from the offscreen HLS muxer
 chrome.runtime.onMessage.addListener((m) => {
   if (!m) return;
 
   if (m.type === 'DOWNLOAD_HISTORY_UPDATED' || m.type === 'ACTIVE_DOWNLOADS_UPDATED' || m.type === 'DOWNLOAD_COMPLETE' || m.type === 'MUX_PROGRESS' || m.type === 'MUX_DONE') {
-    if (typeof refreshDownloadsList === 'function' && !$('downloadsView').classList.contains('hidden')) refreshDownloadsList();
+    // Coalesced: progress fires many times a second per job and each refresh is
+    // a database query in the service worker.
+    if (typeof refreshDownloadsList === 'function' && !$('downloadsView').classList.contains('hidden')) {
+      if (m.type === 'MUX_PROGRESS' || m.type === 'ACTIVE_DOWNLOADS_UPDATED') {
+        if (!dlRefreshTimer) dlRefreshTimer = setTimeout(() => { dlRefreshTimer = null; refreshDownloadsList(); }, 1000);
+      } else {
+        refreshDownloadsList();
+      }
+    }
   }
 
   const j = m && m.id && muxJobs[m.id];
@@ -24,10 +33,12 @@ chrome.runtime.onMessage.addListener((m) => {
     const text = m.status || `${m.id.startsWith('dl_') ? 'Fetching' : 'Muxing'} ${Math.round(m.percent)}%`;
     if (j.btn) {
       j.btn.disabled = true;
+      jobControls(j.btn, m.id, !!m.paused);
       j.btn.textContent = text;
     }
     j.setMsg(text, true);
   } else if (m.type === 'MUX_DONE') {
+    clearJobControls(j.btn);
     if (m.error) {
       const isCancel = m.error.includes('aborted') || m.error.includes('Cancelled');
       j.setMsg(isCancel ? 'Cancelled' : m.error, false);
@@ -50,6 +61,7 @@ const $ = (id) => document.getElementById(id);
 document.addEventListener('DOMContentLoaded', init);
 
 function init() {
+  setupDownloadsSync(() => { if (!$('downloadsView').classList.contains('hidden')) refreshDownloadsList(); });
   $('pageUrl').textContent = pageUrlParam;
   setupVideoModal();
 
@@ -182,7 +194,7 @@ async function scan() {
               return parseInt(window.__PLAYER_CONFIG__.metadata.duration, 10);
             }
           } catch (_) {}
-          return 1800; // 30 min default fallback for page video streams
+          return 0; // unknown: leave sizes blank rather than invent them
         }
       });
       if (res && res[0] && res[0].result) {
@@ -197,7 +209,7 @@ async function scan() {
       return;
     }
     // Filter out raw .m4s segment spam
-    const rawItems = (resp.items || []).filter(it => !/\.m4s(\?|#|$)/i.test(it.url) && !/\/frag\(\d+\)/i.test(it.url));
+    const rawItems = (resp.items || []).filter(it => !/\.(m4s|ts|cmfv|cmfa|m4f)(\?|#|$)/i.test(it.url) && !/\/frag\(\d+\)/i.test(it.url));
     pageTitleVal = resp.title || '';
 
     // Expand HLS streams into separate resolution cards (1080p, 720p, 480p, 360p) with estimated sizes
@@ -407,12 +419,6 @@ function card(it, idx) {
         <div class="thumb icon" style="display:none">${it.isSubtitle ? '💬' : it.type === 'audio' ? '🎵' : it.type === 'doc' ? '📄' : '🎬'}</div>
       </div>
     `;
-  } else if (it.type === 'video' || it.isVideo) {
-    preview = `
-      <div style="position: relative; width: 64px; height: 64px; flex-shrink: 0;">
-        <video class="thumb" src="${esc(downloadUrl)}#t=0.1" preload="metadata" muted playsinline></video>
-      </div>
-    `;
   } else {
     preview = `<div class="thumb icon">${it.isSubtitle ? '💬' : it.type === 'audio' ? '🎵' : it.type === 'doc' ? '📄' : '🎬'}</div>`;
   }
@@ -613,7 +619,7 @@ function download(it, btn, statusEl, customFilename) {
     muxJobs[id] = { btn, setMsg };
     setMsg('Fetching 0%…', true);
     if (btn) btn.textContent = 'Fetching 0%…';
-    chrome.runtime.sendMessage({ type: 'MUX_HLS', id, url: it.url, filename });
+    chrome.runtime.sendMessage({ type: 'MUX_HLS', id, url: it.url, filename, pageUrl: pageUrlParam });
     return;
   }
 
@@ -636,7 +642,7 @@ function download(it, btn, statusEl, customFilename) {
     if (chrome.runtime.lastError || !res || !res.ok) {
       const id = 'dl_' + Math.random().toString(36).slice(2);
       muxJobs[id] = { btn, setMsg };
-      chrome.runtime.sendMessage({ type: 'DOWNLOAD_PARALLEL', id, url: it.url, filename });
+      chrome.runtime.sendMessage({ type: 'DOWNLOAD_PARALLEL', id, url: it.url, filename, pageUrl: pageUrlParam });
     } else {
       setMsg('✓ Downloaded', true);
       if (btn) {
@@ -668,7 +674,7 @@ async function downloadSubtitle(it, btn, setMsg, customFilename) {
     if (chrome.runtime.lastError || !res || !res.ok) {
       const id = 'dl_' + Math.random().toString(36).slice(2);
       muxJobs[id] = { btn, setMsg };
-      chrome.runtime.sendMessage({ type: 'DOWNLOAD_PARALLEL', id, url: targetUrl, filename });
+      chrome.runtime.sendMessage({ type: 'DOWNLOAD_PARALLEL', id, url: targetUrl, filename, pageUrl: pageUrlParam });
     } else {
       setMsg('✓ Downloaded', true);
       if (btn) {
@@ -704,24 +710,6 @@ function setupVideoModal() {
       download({ ...currentPreviewItem, url: currentPreviewUrl }, playerDlBtn, null, currentPreviewFilename);
     };
   }
-}
-
-function openVideoPreview(it, url, title) {
-  $('videoTitle').textContent = title || 'Video Preview';
-  currentPreviewItem = it;
-  currentPreviewUrl = url;
-  currentPreviewFilename = title || (it ? it._customName || fileName(it) : 'video.mp4');
-
-  const player = $('previewPlayer');
-  const playerDlBtn = $('playerDownloadBtn');
-  if (playerDlBtn) {
-    playerDlBtn.disabled = false;
-    playerDlBtn.textContent = '⬇ Download';
-  }
-
-  player.src = url;
-  $('videoModal').classList.remove('hidden');
-  player.play().catch(() => {});
 }
 
 // ── Bulk Download Modal & ZIP Generator ──
@@ -926,7 +914,7 @@ function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<
 // Parse HLS master playlist variants
 async function getHlsVariants(masterUrl) {
   try {
-    const response = await fetch(masterUrl);
+    const response = await fetch(masterUrl, { signal: AbortSignal.timeout(6000) });
     if (!response.ok) return [];
     const text = await response.text();
     if (!text.includes('#EXT-X-STREAM-INF')) return [];
@@ -1020,6 +1008,12 @@ async function expandHlsStreams(itemsList) {
   const seenUrls = new Set();
   const dur = window._pageVideoDuration || 0;
 
+  // Parallel, timeout-bounded playlist fetches (a hung one used to stall the scan).
+  const variantsByUrl = new Map();
+  await Promise.all(itemsList.filter((it) => it.kind === 'hls').map(async (it) => {
+    variantsByUrl.set(it.url, await getHlsVariants(it.url));
+  }));
+
   for (const it of itemsList) {
     if (it.kind !== 'hls') {
       if (!seenUrls.has(it.url)) {
@@ -1030,7 +1024,7 @@ async function expandHlsStreams(itemsList) {
     }
 
     // Try parsing master variants
-    const variants = await getHlsVariants(it.url);
+    const variants = variantsByUrl.get(it.url);
     if (variants && variants.length > 0) {
       for (const v of variants) {
         if (seenUrls.has(v.url)) continue;
@@ -1082,12 +1076,15 @@ async function expandHlsStreams(itemsList) {
     }
   }
 
-  // Deduplicate items by resolution label if names match
+  // Key on the stream's own path — resolution + page title merged every HLS
+  // video of the same quality on a page into a single entry.
   const finalItems = [];
   const seenPx = new Set();
   for (const item of expanded) {
     if (item.kind === 'hls' && item._pixelLabel) {
-      const key = `${item._pixelLabel}_${item._customName}`;
+      let path = item.url;
+      try { const u = new URL(item.url); path = u.origin + u.pathname; } catch (_) {}
+      const key = `${item._pixelLabel}_${path}`;
       if (seenPx.has(key)) continue;
       seenPx.add(key);
     }
@@ -1653,6 +1650,13 @@ function formatTimeAgo(ts) {
   return `${dateStr} · ${timeStr}`;
 }
 
+function fmtEta(sec) {
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  if (m < 60) return `${m}m ${sec % 60}s`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
 function refreshDownloadsList() {
   chrome.runtime.sendMessage({
     type: 'GET_DOWNLOADS',
@@ -1707,7 +1711,8 @@ function renderDownloadsUI(activeList = [], historyList = [], stats = {}) {
         const percent = Math.min(100, Math.max(0, Math.round(job.percent || 0)));
         const statusText = job.status || (job.state === 'saving' ? 'Saving file…' : `Downloading ${percent}%…`);
         const speedText = job.speedMBs ? `${job.speedMBs} MB/s` : '';
-        const etaText = job.etaSeconds ? ` · ETA ${job.etaSeconds}s` : '';
+        const etaText = job.etaSeconds && !job.paused ? ` · ETA ${fmtEta(job.etaSeconds)}` : '';
+        const canPause = job.state !== 'saving';
         const typeBadge = (job.type || 'FILE').toUpperCase();
 
         card.innerHTML = `
@@ -1727,10 +1732,23 @@ function renderDownloadsUI(activeList = [], historyList = [], stats = {}) {
               <span>${speedText ? '· ' + speedText + etaText : ''}</span>
             </div>
             <div class="dl-card-actions">
+              ${canPause ? `<button class="btn-dl-action pause-job-btn">${job.paused ? '▶ Resume' : '⏸ Pause'}</button>` : ''}
               <button class="btn-dl-action danger cancel-job-btn" data-id="${job.id || ''}" data-dlid="${job.downloadId || ''}">✕ Cancel</button>
             </div>
           </div>
         `;
+
+        const pauseBtn = card.querySelector('.pause-job-btn');
+        if (pauseBtn) {
+          pauseBtn.onclick = () => {
+            pauseBtn.disabled = true;
+            chrome.runtime.sendMessage({
+              type: job.paused ? 'RESUME_DOWNLOAD_JOB' : 'PAUSE_DOWNLOAD_JOB',
+              id: job.id,
+              downloadId: job.downloadId
+            }, () => refreshDownloadsList());
+          };
+        }
 
         card.querySelector('.cancel-job-btn').onclick = () => {
           chrome.runtime.sendMessage({
@@ -1840,4 +1858,47 @@ function renderDownloadsUI(activeList = [], historyList = [], stats = {}) {
       });
     }
   }
+}
+
+// ── Max simultaneous downloads + cross-tab sync ──
+// Job state lives in chrome.storage (written by the service worker), so every
+// popup and grabber tab sees the same list. Any change re-renders this one.
+function setupDownloadsSync(refresh) {
+  const sel = document.getElementById('maxJobsSelect');
+  const syncSelect = (v) => { if (sel) sel.value = String(v || 2); };
+  chrome.storage.local.get('maxConcurrentJobs', (r) => syncSelect(r.maxConcurrentJobs));
+  if (sel) {
+    sel.onchange = () => chrome.runtime.sendMessage({ type: 'SET_MAX_JOBS', value: parseInt(sel.value, 10) });
+  }
+  let t = null;
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local') return;
+    if (changes.maxConcurrentJobs) syncSelect(changes.maxConcurrentJobs.newValue);
+    if (changes.activeDownloadJobs || changes.activeDownloads || changes.downloadHistory) {
+      if (t) return;
+      t = setTimeout(() => { t = null; refresh(); }, 600);
+    }
+  });
+}
+
+// ── Pause / Stop controls beside a running download button ──
+function jobControls(btn, id, paused) {
+  if (!btn || !btn.parentElement) return;
+  let box = btn.parentElement.querySelector('.job-ctl');
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'job-ctl';
+    box.innerHTML = '<button class="job-ctl-btn job-pause" title="Pause / resume">⏸</button><button class="job-ctl-btn job-stop" title="Stop and discard">⏹</button>';
+    btn.insertAdjacentElement('afterend', box);
+  }
+  box.dataset.id = id;
+  const pauseBtn = box.querySelector('.job-pause');
+  pauseBtn.textContent = paused ? '▶' : '⏸';
+  pauseBtn.title = paused ? 'Resume' : 'Pause';
+  pauseBtn.onclick = () => chrome.runtime.sendMessage({ type: paused ? 'RESUME_DOWNLOAD_JOB' : 'PAUSE_DOWNLOAD_JOB', id });
+  box.querySelector('.job-stop').onclick = () => chrome.runtime.sendMessage({ type: 'CANCEL_DOWNLOAD_JOB', id });
+}
+function clearJobControls(btn) {
+  const box = btn && btn.parentElement && btn.parentElement.querySelector('.job-ctl');
+  if (box) box.remove();
 }

@@ -1985,3 +1985,13 @@ input:checked + .slider:before {
 }
 
 
+
+.dl-section-label { display: flex; align-items: center; justify-content: space-between; }
+.dl-max-wrap { display: inline-flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 500; text-transform: none; letter-spacing: 0; opacity: .85; }
+.dl-max-select { background: rgba(255,255,255,.06); color: inherit; border: 1px solid rgba(255,255,255,.18); border-radius: 6px; padding: 2px 4px; font-size: 11px; }
+.dl-max-select option { color: #111; }
+
+.job-ctl { display: flex; gap: 4px; margin-top: 4px; }
+.job-ctl-btn { flex: 1; background: rgba(255,255,255,.08); color: inherit; border: 1px solid rgba(255,255,255,.2); border-radius: 6px; padding: 3px 0; font-size: 12px; cursor: pointer; }
+.job-ctl-btn:hover { background: rgba(255,255,255,.16); }
+.job-ctl .job-stop { color: #f87171; }

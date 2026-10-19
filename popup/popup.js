@@ -19,7 +19,7 @@ chrome.runtime.onMessage.addListener((m) => {
   if (!m) return;
 
   if (m.type === 'DOWNLOAD_HISTORY_UPDATED' || m.type === 'ACTIVE_DOWNLOADS_UPDATED' || m.type === 'DOWNLOAD_COMPLETE') {
-    if (typeof refreshDownloadsList === 'function') refreshDownloadsList();
+    scheduleDownloadsRefresh(m.type !== 'ACTIVE_DOWNLOADS_UPDATED');
   }
 
   if (m.id) {
@@ -41,6 +41,7 @@ chrome.runtime.onMessage.addListener((m) => {
       if (m.type === 'MUX_PROGRESS') {
         if (j.btn) {
           j.btn.disabled = true;
+          jobControls(j.btn, m.id, !!m.paused);
           if (m.status) {
             j.btn.textContent = m.status;
           } else {
@@ -49,6 +50,7 @@ chrome.runtime.onMessage.addListener((m) => {
           }
         }
       } else if (m.type === 'MUX_DONE') {
+        clearJobControls(j.btn);
         if (m.error) {
           if (j.btn) {
             const isCancel = m.error.includes('aborted') || m.error.includes('Cancelled');
@@ -78,9 +80,26 @@ chrome.runtime.onMessage.addListener((m) => {
   }
 
   if (m.type === 'MUX_PROGRESS' || m.type === 'MUX_DONE') {
-    if (typeof refreshDownloadsList === 'function') refreshDownloadsList();
+    // Coalesced: progress arrives many times a second per job, and each refresh
+    // is a database query in the service worker.
+    scheduleDownloadsRefresh(m.type === 'MUX_DONE');
   }
 });
+
+let dlRefreshTimer = null;
+function scheduleDownloadsRefresh(immediate = false) {
+  if (immediate) {
+    clearTimeout(dlRefreshTimer);
+    dlRefreshTimer = null;
+    if (typeof refreshDownloadsList === 'function') refreshDownloadsList();
+    return;
+  }
+  if (dlRefreshTimer) return;
+  dlRefreshTimer = setTimeout(() => {
+    dlRefreshTimer = null;
+    if (typeof refreshDownloadsList === 'function') refreshDownloadsList();
+  }, 1000);
+}
 
 document.addEventListener('DOMContentLoaded', init);
 
@@ -187,9 +206,25 @@ function setupNavTabs() {
 }
 
 // ── In-Popup Scanner ──
-async function scanCurrentPage(reset = false) {
+let scanSeq = 0;
+
+// SCAN_TAB with one retry: the MV3 worker may be waking up (or get recycled
+// mid-request), which surfaces as a closed-port lastError on the first try.
+function requestScan(reset) {
+  const attempt = () => new Promise((resolve) => {
+    chrome.runtime.sendMessage({ type: 'SCAN_TAB', tabId: activeTabId, reset }, (resp) => {
+      resolve(chrome.runtime.lastError ? null : resp);
+    });
+  });
+  return attempt().then((resp) => (resp && resp.ok ? resp : new Promise((r) => setTimeout(r, 400)).then(attempt)));
+}
+
+async function scanCurrentPage(reset = false, silent = false) {
   if (!activeTabId) return;
-  $('resourceGrid').innerHTML = '<div class="loading-state">Scanning current tab...</div>';
+  // Overlapping scans (open + live update + refresh) used to render out of order
+  // and clobber each other; only the newest one is allowed to draw.
+  const seq = ++scanSeq;
+  if (!silent) $('resourceGrid').innerHTML = '<div class="loading-state">Scanning current tab...</div>';
 
   // Probe active page video duration to calculate HLS stream size accurately
   try {
@@ -228,30 +263,39 @@ async function scanCurrentPage(reset = false) {
             return parseInt(window.__PLAYER_CONFIG__.metadata.duration, 10);
           }
         } catch (_) {}
-        return 1800; // 30 min default fallback for page video streams
+        return 0; // unknown: sizes are left blank rather than invented from a guessed length
       }
     });
-    if (res && res[0] && res[0].result) {
-      window._pageVideoDuration = res[0].result;
-    }
+    window._pageVideoDuration = (res && res[0] && res[0].result) || 0;
   } catch (_) {}
 
-  chrome.runtime.sendMessage({ type: 'SCAN_TAB', tabId: activeTabId, reset }, async (resp) => {
-    if (chrome.runtime.lastError || !resp || !resp.ok) {
-      $('resourceGrid').innerHTML = '<div class="empty-state">Could not scan this page. Try reloading the tab.</div>';
-      return;
-    }
+  const resp = await requestScan(reset);
+  if (seq !== scanSeq) return;
+  if (!resp || !resp.ok) {
+    if (!silent) $('resourceGrid').innerHTML = '<div class="empty-state">Could not scan this page. Try reloading the tab.</div>';
+    return;
+  }
 
-    // Filter out raw .m4s segment spam
-    const rawItems = (resp.items || []).filter(it => !/\.m4s(\?|#|$)/i.test(it.url) && !/\/frag\(\d+\)/i.test(it.url));
-    
-    // Expand HLS streams into separate resolution cards (1080p, 720p, 480p, 360p) with estimated sizes
-    fetchedItems = await expandHlsStreams(rawItems);
-    updateCategoryCounts();
-    populateFormatDropdown();
-    renderResourceGrid();
-  });
+  // Filter out raw segment spam (.m4s, .ts, chunk/frag files)
+  const rawItems = (resp.items || []).filter(it => !/\.(m4s|ts|cmfv|cmfa|m4f)(\?|#|$)/i.test(it.url) && !/\/frag\(\d+\)/i.test(it.url));
+
+  // Expand HLS streams into separate resolution cards (1080p, 720p, 480p, 360p) with estimated sizes
+  const expanded = await expandHlsStreams(rawItems);
+  if (seq !== scanSeq) return;
+  fetchedItems = expanded;
+  updateCategoryCounts();
+  populateFormatDropdown();
+  renderResourceGrid();
 }
+
+// New media sniffed while the popup is open (chunked/buffered players reveal
+// their stream late): refresh quietly, debounced so a burst is one rescan.
+let liveScanTimer = null;
+chrome.runtime.onMessage.addListener((m) => {
+  if (!m || m.type !== 'MEDIA_UPDATE' || m.tabId !== activeTabId) return;
+  clearTimeout(liveScanTimer);
+  liveScanTimer = setTimeout(() => scanCurrentPage(false, true), 1200);
+});
 
 function clearCurrentList() {
   fetchedItems = [];
@@ -478,7 +522,7 @@ function createResourceCard(it, idx) {
   it._customName = filename;
 
   const formatBadge = it.kind === 'hls' ? 'HLS' : it.kind === 'dash' ? 'DASH' : it.kind === 'subtitle' ? 'CC' : (getExt(downloadUrl) || it.type).toUpperCase();
-  const sizeBadge = it.size ? fmtSize(it.size) : '';
+  const sizeBadge = it.size ? (it.sizeIsEstimate ? '~' : '') + fmtSize(it.size) : '';
 
   const thumbUrl = it.poster || it.thumbnail || (it.type === 'image' ? downloadUrl : null);
   let preview = '';
@@ -489,13 +533,10 @@ function createResourceCard(it, idx) {
         <div class="res-thumb" style="display:none">${it.isSubtitle ? '💬' : it.type === 'audio' ? '🎵' : it.type === 'doc' ? '📄' : '🎬'}</div>
       </div>
     `;
-  } else if (it.type === 'video' || it.isVideo) {
-    preview = `
-      <div style="position: relative; width: 44px; height: 44px; flex-shrink: 0;">
-        <video class="res-thumb" src="${escUrl(downloadUrl)}#t=0.1" preload="metadata" muted playsinline></video>
-      </div>
-    `;
   } else {
+    // No <video preload="metadata"> thumbnails: each one opened its own
+    // connection to the media URL, and the grid is rebuilt on every rescan.
+    // The Preview button still plays the real stream on demand.
     preview = `<div class="res-thumb">${it.isSubtitle ? '💬' : it.type === 'audio' ? '🎵' : it.type === 'doc' ? '📄' : '🎬'}</div>`;
   }
 
@@ -534,9 +575,12 @@ function createResourceCard(it, idx) {
   // Parse HLS master playlists for resolution (pixels), variants, and accurate segment-summed size
   if (it.kind === 'hls' && !it._parsedHls) {
     it._parsedHls = true;
-    const inspectFn = typeof inspectHlsStream === 'function' ? inspectHlsStream : getHlsVariants;
-    inspectFn(downloadUrl).then(result => {
-      const variants = Array.isArray(result) ? result : (result?.variants || []);
+    getHlsInfo(downloadUrl).then(result => {
+      let variants = Array.isArray(result) ? result : (result?.variants || []);
+      // A plain media playlist (an already-expanded rendition) reports a single
+      // self-referencing placeholder variant; it must not overwrite the label
+      // or size the list already worked out.
+      if (variants.length === 1 && variants[0].url === downloadUrl) variants = [];
       const segmentsCount = result?.segmentsCount || 0;
 
       if (variants && variants.length > 0) {
@@ -594,10 +638,16 @@ function createResourceCard(it, idx) {
   }
 
   // Fetch real size asynchronously if missing for direct files
+  if (!it.size && sizeCache.has(downloadUrl)) {
+    it.size = sizeCache.get(downloadUrl);
+    const cachedEl = card.querySelector('.res-size');
+    if (cachedEl) cachedEl.textContent = '· ' + fmtSize(it.size);
+  }
   if (!it.size && !it._fetchingSize && it.kind !== 'hls' && it.kind !== 'dash') {
     it._fetchingSize = true;
     chrome.runtime.sendMessage({ type: 'FETCH_SIZE', url: downloadUrl }, (res) => {
       if (res && res.ok && res.size > 0) {
+        sizeCache.set(downloadUrl, res.size);
         it.size = res.size;
         const sizeEl = card.querySelector('.res-size');
         if (sizeEl) sizeEl.textContent = '· ' + fmtSize(res.size);
@@ -713,6 +763,7 @@ function downloadItem(it, downloadUrl, filename, btn, preferredQuality = '') {
       id,
       url: downloadUrl,
       filename: resolvedName,
+      pageUrl,
       preferredQuality
     }, () => {
       if (typeof refreshDownloadsList === 'function') refreshDownloadsList();
@@ -1685,6 +1736,7 @@ let currentDlQuery = '';
 let dlSearchDebounce = null;
 
 function setupDownloadsTab() {
+  setupDownloadsSync(refreshDownloadsList);
   const clearBtn = $('clearDlHistoryBtn');
   if (clearBtn) {
     clearBtn.onclick = () => {
@@ -1787,6 +1839,13 @@ function formatTimeAgo(ts) {
   return `${dateStr} · ${timeStr}`;
 }
 
+function fmtEta(sec) {
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  if (m < 60) return `${m}m ${sec % 60}s`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
 function refreshDownloadsList() {
   chrome.runtime.sendMessage({
     type: 'GET_DOWNLOADS',
@@ -1841,7 +1900,8 @@ function renderDownloadsUI(activeList = [], historyList = [], stats = {}) {
         const percent = Math.min(100, Math.max(0, Math.round(job.percent || 0)));
         const statusText = job.status || (job.state === 'saving' ? 'Saving file…' : `Downloading ${percent}%…`);
         const speedText = job.speedMBs ? `${job.speedMBs} MB/s` : '';
-        const etaText = job.etaSeconds ? ` · ETA ${job.etaSeconds}s` : '';
+        const etaText = job.etaSeconds && !job.paused ? ` · ETA ${fmtEta(job.etaSeconds)}` : '';
+        const canPause = job.state !== 'saving';
         const typeBadge = (job.type || 'FILE').toUpperCase();
 
         card.innerHTML = `
@@ -1861,10 +1921,23 @@ function renderDownloadsUI(activeList = [], historyList = [], stats = {}) {
               <span>${speedText ? '· ' + speedText + etaText : ''}</span>
             </div>
             <div class="dl-card-actions">
+              ${canPause ? `<button class="btn-dl-action pause-job-btn">${job.paused ? '▶ Resume' : '⏸ Pause'}</button>` : ''}
               <button class="btn-dl-action danger cancel-job-btn" data-id="${job.id || ''}" data-dlid="${job.downloadId || ''}">✕ Cancel</button>
             </div>
           </div>
         `;
+
+        const pauseBtn = card.querySelector('.pause-job-btn');
+        if (pauseBtn) {
+          pauseBtn.onclick = () => {
+            pauseBtn.disabled = true;
+            chrome.runtime.sendMessage({
+              type: job.paused ? 'RESUME_DOWNLOAD_JOB' : 'PAUSE_DOWNLOAD_JOB',
+              id: job.id,
+              downloadId: job.downloadId
+            }, () => refreshDownloadsList());
+          };
+        }
 
         card.querySelector('.cancel-job-btn').onclick = () => {
           chrome.runtime.sendMessage({
@@ -1989,6 +2062,9 @@ function setupSettingsHandlers() {
     ENGINE_MODEL = engineVal;
     CONFIRM_NAME = confirmVal;
 
+    chrome.runtime.sendMessage({ type: 'SET_MAX_JOBS', value: parseInt($('maxJobsSetting').value, 10) });
+    chrome.runtime.sendMessage({ type: 'SET_CONNECTIONS', value: parseInt($('connectionsSetting').value, 10) });
+
     await chrome.storage.local.set({
       backendUrl: SERVER,
       apiKey: API_KEY,
@@ -2089,7 +2165,7 @@ function setupPopoutButton() {
 // ── Network & HLS Master Playlist Parsers ──
 async function getHlsVariants(masterUrl) {
   try {
-    const response = await fetch(masterUrl);
+    const response = await fetch(masterUrl, { signal: AbortSignal.timeout(6000) });
     if (!response.ok) return [];
     const text = await response.text();
     if (!text.includes('#EXT-X-STREAM-INF')) return [];
@@ -2284,10 +2360,37 @@ function detectResolutionFromUrl(url) {
   return m ? m[1] + 'p' : '';
 }
 
+// One inspection per playlist URL, shared by the list expansion and the card
+// renderer. Live rescans rebuild every card, and each rebuild used to refetch
+// every playlist, which is a big part of why the list loaded so slowly.
+const hlsInfoCache = new Map();
+function getHlsInfo(url) {
+  if (!hlsInfoCache.has(url)) {
+    const empty = { variants: [], totalDuration: 0, segmentsCount: 0, subtitles: [] };
+    const p = (typeof inspectHlsStream === 'function'
+      ? inspectHlsStream(url, { signal: AbortSignal.timeout(8000) })
+      : getHlsVariants(url).then((variants) => ({ ...empty, variants }))
+    ).catch(() => empty);
+    hlsInfoCache.set(url, p);
+    // Don't pin failures: a transient timeout should be retried on the next scan.
+    p.then((r) => { if (!r.variants.length) hlsInfoCache.delete(url); });
+  }
+  return hlsInfoCache.get(url);
+}
+
+const sizeCache = new Map(); // url -> bytes, for direct files
+
 async function expandHlsStreams(itemsList) {
   const expanded = [];
   const seenUrls = new Set();
-  const dur = window._pageVideoDuration || 1800;
+  const pageDur = window._pageVideoDuration || 0;
+
+  // Fetch every playlist in parallel (each bounded by a timeout) instead of
+  // one-by-one — a single slow/hung playlist used to stall the whole scan.
+  const infoByUrl = new Map();
+  await Promise.all(itemsList.filter((it) => it.kind === 'hls').map(async (it) => {
+    infoByUrl.set(it.url, await getHlsInfo(it.url));
+  }));
 
   for (const it of itemsList) {
     if (it.kind !== 'hls') {
@@ -2298,15 +2401,24 @@ async function expandHlsStreams(itemsList) {
       continue;
     }
 
-    // Try parsing master variants
-    const variants = await getHlsVariants(it.url);
-    if (variants && variants.length > 0) {
+    // Real length comes from summing the playlist's segments. The page's
+    // <video> length is only a fallback, and when neither is known the size is
+    // left blank: the old code assumed 30 minutes, which is where the identical
+    // fake "460 MB" entries (720p x 1800s) came from.
+    const info = infoByUrl.get(it.url) || {};
+    const dur = info.totalDuration || pageDur || 0;
+    const allVariants = info.variants || [];
+    const isMaster = allVariants.length > 0 && !(allVariants.length === 1 && allVariants[0].url === it.url);
+    const variants = isMaster ? allVariants : [];
+    if (variants.length > 0) {
       for (const v of variants) {
         if (seenUrls.has(v.url)) continue;
         seenUrls.add(v.url);
 
         const pxLabel = v.label.includes('p') ? v.label : v.label + 'p';
-        const estBytes = (v.bandwidth && dur > 0) ? Math.round((v.bandwidth / 8) * dur) : (BITRATE_MAP[pxLabel] && dur > 0 ? Math.round((BITRATE_MAP[pxLabel] / 8) * dur) : Math.round((1800000 / 8) * dur));
+        const estBytes = dur > 0
+          ? (v.bandwidth ? Math.round((v.bandwidth / 8) * dur) : (BITRATE_MAP[pxLabel] ? Math.round((BITRATE_MAP[pxLabel] / 8) * dur) : 0))
+          : 0;
 
         const baseTitle = cleanStringForFilename(pageTitleVal) || 'Video';
         const customName = `${baseTitle}_${pxLabel}.mp4`;
@@ -2320,6 +2432,7 @@ async function expandHlsStreams(itemsList) {
           _pixelLabel: pxLabel,
           _customName: customName,
           size: estBytes,
+          sizeIsEstimate: true,
           duration: dur
         });
       }
@@ -2338,8 +2451,7 @@ async function expandHlsStreams(itemsList) {
       if (!pxLabel && it.url.includes('x360')) pxLabel = '360p';
       if (!pxLabel) pxLabel = '720p';
 
-      const bw = BITRATE_MAP[pxLabel] || 1800000;
-      const estBytes = Math.round((bw / 8) * dur);
+      const estBytes = dur > 0 ? Math.round(((BITRATE_MAP[pxLabel] || 1800000) / 8) * dur) : 0;
 
       const baseTitle = cleanStringForFilename(pageTitleVal) || 'Video';
       const customName = `${baseTitle}_${pxLabel}.mp4`;
@@ -2349,17 +2461,22 @@ async function expandHlsStreams(itemsList) {
         _pixelLabel: pxLabel,
         _customName: it._customName || customName,
         size: it.size || estBytes,
+        sizeIsEstimate: !it.size,
         duration: dur
       });
     }
   }
 
-  // Deduplicate items by resolution label if names match
+  // Deduplicate the same rendition seen twice (e.g. token-only URL differences).
+  // The key must include the stream's own path: it used to be resolution + page
+  // title, which merged every HLS video of the same quality on a page into one.
   const finalItems = [];
   const seenPx = new Set();
   for (const item of expanded) {
     if (item.kind === 'hls' && item._pixelLabel) {
-      const key = `${item._pixelLabel}_${item._customName}`;
+      let path = item.url;
+      try { const u = new URL(item.url); path = u.origin + u.pathname; } catch (_) {}
+      const key = `${item._pixelLabel}_${path}`;
       if (seenPx.has(key)) continue;
       seenPx.add(key);
     }
@@ -2367,4 +2484,48 @@ async function expandHlsStreams(itemsList) {
   }
 
   return finalItems;
+}
+
+// ── Max simultaneous downloads + cross-tab sync ──
+// Job state lives in chrome.storage (written by the service worker), so every
+// popup and grabber tab sees the same list. Any change re-renders this one.
+function setupDownloadsSync(refresh) {
+  const sels = ['maxJobsSelect', 'maxJobsSetting'].map((i) => document.getElementById(i)).filter(Boolean);
+  const syncSelect = (v) => sels.forEach((e) => { e.value = String(v || 2); });
+  chrome.storage.local.get('maxConcurrentJobs', (r) => syncSelect(r.maxConcurrentJobs));
+  const connSel = document.getElementById('connectionsSetting');
+  if (connSel) chrome.storage.local.get('connectionsPerJob', (r) => { connSel.value = String(r.connectionsPerJob || 16); });
+  const tabSel = document.getElementById('maxJobsSelect');
+  if (tabSel) tabSel.onchange = () => chrome.runtime.sendMessage({ type: 'SET_MAX_JOBS', value: parseInt(tabSel.value, 10) });
+  let t = null;
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local') return;
+    if (changes.maxConcurrentJobs) syncSelect(changes.maxConcurrentJobs.newValue);
+    if (changes.activeDownloadJobs || changes.activeDownloads || changes.downloadHistory) {
+      if (t) return;
+      t = setTimeout(() => { t = null; refresh(); }, 600);
+    }
+  });
+}
+
+// ── Pause / Stop controls beside a running download button ──
+function jobControls(btn, id, paused) {
+  if (!btn || !btn.parentElement) return;
+  let box = btn.parentElement.querySelector('.job-ctl');
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'job-ctl';
+    box.innerHTML = '<button class="job-ctl-btn job-pause" title="Pause / resume">⏸</button><button class="job-ctl-btn job-stop" title="Stop and discard">⏹</button>';
+    btn.insertAdjacentElement('afterend', box);
+  }
+  box.dataset.id = id;
+  const pauseBtn = box.querySelector('.job-pause');
+  pauseBtn.textContent = paused ? '▶' : '⏸';
+  pauseBtn.title = paused ? 'Resume' : 'Pause';
+  pauseBtn.onclick = () => chrome.runtime.sendMessage({ type: paused ? 'RESUME_DOWNLOAD_JOB' : 'PAUSE_DOWNLOAD_JOB', id });
+  box.querySelector('.job-stop').onclick = () => chrome.runtime.sendMessage({ type: 'CANCEL_DOWNLOAD_JOB', id });
+}
+function clearJobControls(btn) {
+  const box = btn && btn.parentElement && btn.parentElement.querySelector('.job-ctl');
+  if (box) box.remove();
 }
