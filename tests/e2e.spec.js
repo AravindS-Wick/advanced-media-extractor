@@ -23,6 +23,6 @@ test.describe('Media Extractor PRO Playwright Suite', () => {
     // Controls
     await expect(page.locator('#searchInput')).toBeVisible();
     await expect(page.locator('#formatFilter')).toBeVisible();
-    await expect(page.locator('#bulkDownloadBtn')).toBeVisible();
+    await expect(page.locator('#bulkDownload')).toBeVisible();
   });
 });
