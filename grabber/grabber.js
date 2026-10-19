@@ -2,6 +2,7 @@
 const params = new URLSearchParams(location.search);
 const tabId = parseInt(params.get('tabId'), 10);
 const pageUrlParam = params.get('url') || '';
+const tabUrl = pageUrlParam;
 
 let items = [];
 let activeCat = 'all';
@@ -11,7 +12,9 @@ let searchQuery = '';
 // can be built up across several searches.
 const selected = new Set();
 let viewList = [];
-let lastTickedIdx = -1;
+// Shift-range anchor, kept by URL so it survives the re-renders a selection
+// triggers (an index-based anchor was reset on every render).
+let lastTickedUrl = null;
 const muxJobs = {};
 let dlRefreshTimer = null;
 
@@ -154,6 +157,8 @@ function init() {
 
 function clearList() {
   items = [];
+  selected.clear();        // otherwise the count and "download selected" kept stale URLs
+  lastTickedUrl = null;
   if (tabId) {
     chrome.runtime.sendMessage({ type: 'CLEAR_TAB_MEDIA', tabId });
   }
@@ -399,7 +404,6 @@ function render() {
   const list = getFilteredAndSortedItems();
   
   viewList = list;
-  lastTickedIdx = -1;
   updateSelectionUi(list);
 
   if (!list.length) {
@@ -435,6 +439,8 @@ function card(it, idx) {
     preview = `<div class="thumb icon">${it.isSubtitle ? '💬' : it.type === 'audio' ? '🎵' : it.type === 'doc' ? '📄' : '🎬'}</div>`;
   }
   
+  const badge = it.kind === 'hls' ? 'HLS' : it.kind === 'dash' ? 'DASH' : (ext(downloadUrl) || it.type).toUpperCase();
+  const pixelBadge = it._pixelLabel ? `<span class="kbadge" style="background:#065f46; color:#a7f3d0;">${esc(it._pixelLabel)}</span>` : '';
   const sizeVal = it.size ? fmtSize(it.size) : '';
   const sizeText = sizeVal ? ` · ${sizeVal}` : '';
   const bufferLabel = (it.kind === 'hls' || it.kind === 'dash') ? ' · Stream' : '';
@@ -479,11 +485,13 @@ function card(it, idx) {
     const here = viewList.indexOf(it);
     const on = selBox.checked;
     // Shift+click ticks everything between the last ticked card and this one.
-    const range = e.shiftKey && lastTickedIdx >= 0 && here >= 0
-      ? viewList.slice(Math.min(lastTickedIdx, here), Math.max(lastTickedIdx, here) + 1)
+    // The anchor is resolved by URL so it survives the re-render a range tick causes.
+    const anchor = lastTickedUrl != null ? viewList.findIndex((x) => x.url === lastTickedUrl) : -1;
+    const range = e.shiftKey && anchor >= 0 && here >= 0
+      ? viewList.slice(Math.min(anchor, here), Math.max(anchor, here) + 1)
       : [it];
     range.forEach((x) => (on ? selected.add(x.url) : selected.delete(x.url)));
-    lastTickedIdx = here;
+    lastTickedUrl = it.url;
     if (range.length > 1) render();
     else { div.classList.toggle('selected', on); updateSelectionUi(); }
   };
