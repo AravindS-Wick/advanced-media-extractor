@@ -1771,7 +1771,9 @@ function refreshDownloadsList() {
     type: 'GET_DOWNLOADS',
     filter: currentDlFilter,
     date: currentDlCustomDate,
-    query: currentDlQuery
+    query: currentDlQuery,
+    // Only an incognito grabber page should receive private (incognito) downloads.
+    incognito: !!(chrome.extension && chrome.extension.inIncognitoContext)
   }, (resp) => {
     if (chrome.runtime.lastError || !resp) return;
     renderDownloadsUI(resp.active || [], resp.history || [], resp.stats || {});

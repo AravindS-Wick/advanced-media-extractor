@@ -55,7 +55,9 @@ function setup({ incognitoWindow = false } = {}) {
     chrome.runtime.onMessage.l.forEach((f) => f(m, sender, (x) => { done = true; res(x); }));
     setTimeout(() => { if (!done) res(undefined); }, 150);
   });
-  const list = () => send({ type: 'GET_DOWNLOADS', filter: 'today' });
+  // Private downloads are shown to an incognito caller only, so the caller
+  // declares its context (as the real popup/grabber do via inIncognitoContext).
+  const list = (opts = {}) => send({ type: 'GET_DOWNLOADS', filter: 'today', incognito: !!opts.incognito });
   return { chrome, dl, mem, history, sleep, send, list };
 }
 
@@ -141,13 +143,13 @@ describe('service worker download tracking', () => {
     await t.sleep(50);
     t.chrome.downloads.onChanged.fire({ id: 9, bytesReceived: { current: 300 }, totalBytes: { current: 1000 } });
     await t.sleep(100);
-    let r = await t.list();
+    let r = await t.list({ incognito: true });
     expect(r.active.map((a) => [a.id, a.percent, a.private])).toEqual([['dl_9', 30, true]]);
 
     t.dl[9].state = 'complete';
     t.chrome.downloads.onChanged.fire({ id: 9, state: { current: 'complete' } });
     await t.sleep(150);
-    r = await t.list();
+    r = await t.list({ incognito: true });
     expect(r.active).toHaveLength(0);
     expect(r.history.map((h) => [h.id, h.private])).toEqual([['dl_9', true]]);
     expect(t.history).toHaveLength(0);
@@ -161,7 +163,7 @@ describe('service worker download tracking', () => {
     await t.send({ type: 'DOWNLOAD_PARALLEL', id: 'dl_p1', url: 'https://x.test/big.mp4', filename: 'big.mp4' });
     await t.send({ type: 'MUX_PROGRESS', id: 'dl_p1', filename: 'big.mp4', percent: 20 });
     await t.sleep(100);
-    const r = await t.list();
+    const r = await t.list({ incognito: true });
     expect(r.active.map((a) => a.id)).toEqual(['dl_p1']);
     expect(t.mem.local.activeDownloadJobs || {}).toEqual({});
   });

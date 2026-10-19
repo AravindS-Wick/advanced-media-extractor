@@ -36,11 +36,13 @@ function loadServiceWorker(opts = {}) {
   const localStore = asyncStore(opts.localSetDelayMs || 0);
   if (opts.localInit) Object.assign(localStore._data, opts.localInit);
   const downloadsByState = opts.downloads || {}; // { in_progress: [...], complete: [...] }
+  const messageListeners = [];
+  const onMessage = { addListener: (fn) => messageListeners.push(fn), removeListener() {}, hasListener() { return false; } };
 
   const chrome = {
     runtime: {
       id: 'ext-id', lastError: null,
-      onMessage: evt(), onConnect: evt(), onInstalled: evt(), onStartup: evt(),
+      onMessage, onConnect: evt(), onInstalled: evt(), onStartup: evt(),
       sendMessage: () => Promise.resolve(), connect: () => ({ onDisconnect: evt(), postMessage() {}, disconnect() {} }),
       getURL: (p) => 'chrome-extension://ext-id/' + p
     },
@@ -107,7 +109,15 @@ function loadServiceWorker(opts = {}) {
     + ` ${opt('privateReady')}, ${opt('saveJobSource')}, ${opt('getJobSource')}, ${opt('clearJobSources')},`
     + ` ${opt('removeJobSources')}, ${opt('pruneJobSources')} };`;
   vm.runInContext(src, context, { filename: 'service-worker.js' });
-  return { sw: sandbox.__sw, chrome, dnrRules, dnrCalls, sessionStore, localStore };
+  // Dispatch a runtime message to the service worker's onMessage handler and
+  // resolve with whatever it passes to sendResponse.
+  const dispatch = (message, sender = {}) => new Promise((resolve) => {
+    let done = false;
+    const sendResponse = (resp) => { if (!done) { done = true; resolve(resp); } };
+    for (const fn of messageListeners) fn(message, sender, sendResponse);
+    setTimeout(() => { if (!done) resolve(undefined); }, 300);
+  });
+  return { sw: sandbox.__sw, chrome, dnrRules, dnrCalls, sessionStore, localStore, dispatch };
 }
 
 module.exports = { loadServiceWorker };

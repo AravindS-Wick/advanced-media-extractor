@@ -800,7 +800,11 @@ const pruneJobSources = (cutoff) => mutateJobSources((all) => { Object.keys(all)
 
 async function updateDownloadHistory(entry) {
   try {
-    if (await isPrivate(entry.id, entry.downloadId && 'dl_' + entry.downloadId, entry.url && 'url:' + entry.url)) {
+    // Decide privacy from the reliable per-download markers (the job id and, once
+    // known, dl_<downloadId>), NOT from a url: marker: url: markers persist and
+    // would misclassify a later, unrelated normal download of the same URL as
+    // private and silently drop it from history.
+    if (await isPrivate(entry.id, entry.downloadId && 'dl_' + entry.downloadId)) {
       // Kept for this browser session only so the user still sees it finish.
       const r = await chrome.storage.session.get('privateHistory');
       const list = (r.privateHistory || []).filter((h) => h.id !== entry.id);
@@ -2021,6 +2025,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           dbResult.stats.totalCount = dbResult.items.length;
         }
 
+        // Private (incognito) downloads live in storage.session and must be shown
+        // ONLY to an incognito caller — never merged into a normal popup/grabber.
+        // The caller knows its own context (chrome.extension.inIncognitoContext)
+        // and passes it; a content-script sender exposes it directly.
+        const callerIncognito = message.incognito === true || sender?.tab?.incognito === true;
+
         let res = await chrome.storage.local.get(['activeDownloads', 'activeDownloadJobs']);
         // Jobs live in the offscreen document. If it is gone (crashed, or closed
         // by Chrome) nothing is running them, so they must not be listed.
@@ -2028,7 +2038,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           await recoverAfterRestart();
           res = await chrome.storage.local.get(['activeDownloads', 'activeDownloadJobs']);
         }
-        const priv = await chrome.storage.session.get(['activeDownloads', 'activeDownloadJobs', 'privateHistory']);
+        const priv = callerIncognito
+          ? await chrome.storage.session.get(['activeDownloads', 'activeDownloadJobs', 'privateHistory'])
+          : {};
         if (Object.keys(priv.activeDownloadJobs || {}).length && !(await chrome.offscreen.hasDocument())) {
           priv.activeDownloadJobs = {};
           await chrome.storage.session.set({ activeDownloadJobs: {} });
