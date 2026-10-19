@@ -163,7 +163,11 @@ function scrapeDOM() {
 
   // Scan all page script elements and innerHTML for media URLs
   try {
-    const pageHtml = document.documentElement.innerHTML;
+    // Unescape JSON-encoded URLs ("https:\/\/..." / /) so they can match.
+    const pageHtml = document.documentElement.innerHTML
+      .replace(/\\u002F/gi, '/')
+      .replace(/\\\//g, '/')
+      .replace(/&amp;/g, '&');
     const absUrlRegex = /(https?:\/\/[^\s"'`<>]+?\.(?:mp4|webm|m4v|mkv|mov|flv|avi|mp3|m4a|aac|ogg|opus|wav|flac|pdf|docx?|pptx?|xlsx?|epub|rtf|csv|zip|rar|7z|apk|torrent|m3u8|mpd)(?:\?[^\s"'`<>]*)?)/gi;
     let m;
     while ((m = absUrlRegex.exec(pageHtml)) !== null) {
@@ -175,7 +179,11 @@ function scrapeDOM() {
       add(u, type, '', '', isHls ? 'hls' : isDash ? 'dash' : 'file');
     }
 
-    const relUrlRegex = /(?:"|')([a-z0-9_\-\/\\.+]+?\.(?:mp4|webm|m4v|mkv|mov|flv|avi|mp3|m4a|aac|ogg|opus|wav|flac|pdf|docx?|pptx?|xlsx?|epub|rtf|csv|zip|rar|7z|apk|torrent|m3u8|mpd)(?:\?[^\s"'`<>]*)*)(?:"|')/gi;
+    // The query string is matched once (`?...`), not as a repeatable group. The
+    // old `(?:\?[^\s"'`<>]*)*` let a run of `?` be partitioned many ways, so a
+    // crafted attribute with no closing quote caused catastrophic backtracking
+    // (measured 45 s at 30 `?`) on every page scan.
+    const relUrlRegex = /(?:"|')([a-z0-9_\-\/\\.+]+?\.(?:mp4|webm|m4v|mkv|mov|flv|avi|mp3|m4a|aac|ogg|opus|wav|flac|pdf|docx?|pptx?|xlsx?|epub|rtf|csv|zip|rar|7z|apk|torrent|m3u8|mpd)(?:\?[^\s"'`<>]*)?)(?:"|')/gi;
     while ((m = relUrlRegex.exec(pageHtml)) !== null) {
       const rawUrl = m[1].replace(/\\/g, '');
       try {

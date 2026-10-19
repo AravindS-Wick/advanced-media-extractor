@@ -375,7 +375,9 @@ function collectPageResources() {
       else if (R.doc.test(u)) push(u, 'doc');
     }
 
-    const relUrlRegex = /(?:"|')([a-z0-9_\-\/\\.+]+?\.(?:mp4|webm|m4v|mkv|mov|flv|avi|mp3|m4a|aac|ogg|opus|wav|flac|pdf|docx?|pptx?|xlsx?|epub|rtf|csv|zip|rar|7z|apk|torrent|m3u8|mpd)(?:\?[^\s"'`<>]*)*)(?:"|')/gi;
+    // Query string matched once, not as a repeatable group — see media-scraper.js:
+    // the old `(?:\?...)*` backtracked catastrophically on a crafted attribute.
+    const relUrlRegex = /(?:"|')([a-z0-9_\-\/\\.+]+?\.(?:mp4|webm|m4v|mkv|mov|flv|avi|mp3|m4a|aac|ogg|opus|wav|flac|pdf|docx?|pptx?|xlsx?|epub|rtf|csv|zip|rar|7z|apk|torrent|m3u8|mpd)(?:\?[^\s"'`<>]*)?)(?:"|')/gi;
     while ((m = relUrlRegex.exec(pageHtml)) !== null) {
       const rawUrl = m[1].replace(/\\/g, '');
       try {
