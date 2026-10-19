@@ -101,9 +101,11 @@ function loadServiceWorker(opts = {}) {
   };
 
   let src = fs.readFileSync(path.join(root, 'service-worker.js'), 'utf8');
+  const opt = (name) => `${name}: (typeof ${name} !== "undefined" ? ${name} : null)`;
   src += '\n;globalThis.__sw = { holdHeaderRule, releaseHeldRule, readHeldRules, seedHeaderRuleCounter, nextHeaderRuleId,'
     + ' initDownloadTracking, isPrivate, markPrivate, getRetentionDays, pruneHistory, updateDownloadHistory,'
-    + ' privateReady: (typeof privateReady !== "undefined" ? privateReady : null) };';
+    + ` ${opt('privateReady')}, ${opt('saveJobSource')}, ${opt('getJobSource')}, ${opt('clearJobSources')},`
+    + ` ${opt('removeJobSources')}, ${opt('pruneJobSources')} };`;
   vm.runInContext(src, context, { filename: 'service-worker.js' });
   return { sw: sandbox.__sw, chrome, dnrRules, dnrCalls, sessionStore, localStore };
 }

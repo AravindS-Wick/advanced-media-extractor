@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Media Extractor PRO",
-  "version": "2.0",
+  "version": "2.1",
   "description": "Extract all video & audio streams from any website. Block ads. Inspect storage.",
   "permissions": [
     "declarativeNetRequest",

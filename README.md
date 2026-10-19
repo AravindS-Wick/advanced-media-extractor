@@ -1,4 +1,4 @@
-# ⚡ Media Extractor PRO (v3.0)
+# ⚡ Media Extractor PRO (v2.1)
 
 A high-performance Manifest V3 Chrome Extension and Python backend engine for sniffing, filtering, previewing, and archiving web media (HLS streams, MP4/MKV videos, audio, images, and documents).
 
@@ -13,6 +13,8 @@ A high-performance Manifest V3 Chrome Extension and Python backend engine for sn
 - **🏷️ Smart Metadata Naming**: Auto-extracts titles from page context, video titles, or image alt tags, with inline click-to-edit renaming.
 - **🔎 Inbuilt Video Preview & Search**: Embedded video player modal for stream validation and live keyword searching.
 - **🛡️ Ad & Tracker Shield**: Built-in `declarativeNetRequest` ad blocker with dynamic cosmetic element hiding and persistent toggle synchronization.
+- **🕶️ Incognito-safe history**: downloads started in incognito windows are never written to history. History retention is configurable (forever / 1 year / 90 / 30 / 7 days / off) in Settings.
+- **↻ Restart & Open page**: history entries remember the media link, source page and chosen quality, so a download can be restarted or its page reopened to refresh an expired link.
 - **🔔 Extension Toolbar Badge**: Displays live detected media count badges on the browser action icon overlay and top popup header.
 
 ---

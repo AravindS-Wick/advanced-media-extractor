@@ -727,10 +727,12 @@ async function pruneHistory(force) {
     if (days < 0) {
       await DownloadDB.clearAll();
       await chrome.storage.local.set({ downloadHistory: [] });
+      await clearJobSources();
       return;
     }
     const cutoff = Date.now() - days * 86400000;
     await DownloadDB.pruneOlderThan(cutoff);
+    await pruneJobSources(cutoff);
     const { downloadHistory } = await chrome.storage.local.get('downloadHistory');
     if (Array.isArray(downloadHistory)) {
       await chrome.storage.local.set({
@@ -742,9 +744,73 @@ async function pruneHistory(force) {
   }
 }
 
+// ── Source context ──
+// What a finished (or failed) download needs to be restarted later: the media
+// URL, the page it was found on and the chosen quality. Keyed by job id or
+// "dl_<chromeDownloadId>"; capped so it cannot grow without bound.
+const JOB_SOURCES_KEY = 'jobSources';
+const MAX_JOB_SOURCES = 400;
+let sourceWriteChain = Promise.resolve();
+function saveJobSource(key, ctx) {
+  if (!key || !ctx) return Promise.resolve();
+  sourceWriteChain = sourceWriteChain.then(async () => {
+    try {
+      if (await isPrivate(key)) return;
+      // Honour history retention: "Don't keep history" (-1) must not leave a
+      // trail of visited URLs/pages on disk either.
+      if ((await getRetentionDays()) < 0) return;
+      const r = await chrome.storage.local.get(JOB_SOURCES_KEY);
+      const all = r[JOB_SOURCES_KEY] || {};
+      all[key] = { ...ctx, savedAt: Date.now() };
+      const keys = Object.keys(all);
+      if (keys.length > MAX_JOB_SOURCES) {
+        keys.sort((a, b) => (all[a].savedAt || 0) - (all[b].savedAt || 0))
+          .slice(0, keys.length - MAX_JOB_SOURCES).forEach((k) => delete all[k]);
+      }
+      await chrome.storage.local.set({ [JOB_SOURCES_KEY]: all });
+    } catch (_) {}
+  });
+  return sourceWriteChain;
+}
+
+async function getJobSource(...keys) {
+  await sourceWriteChain;
+  const r = await chrome.storage.local.get(JOB_SOURCES_KEY);
+  const all = r[JOB_SOURCES_KEY] || {};
+  for (const k of keys) if (k && all[k]) return all[k];
+  return null;
+}
+
+// jobSources is history too, so retention / Clear history / erase must reach it
+// — otherwise visited URLs and page titles linger on disk after the user clears.
+function mutateJobSources(fn) {
+  sourceWriteChain = sourceWriteChain.then(async () => {
+    try {
+      const r = await chrome.storage.local.get(JOB_SOURCES_KEY);
+      const all = r[JOB_SOURCES_KEY] || {};
+      if (fn(all) !== false) await chrome.storage.local.set({ [JOB_SOURCES_KEY]: all });
+    } catch (_) {}
+  });
+  return sourceWriteChain;
+}
+const clearJobSources = () => mutateJobSources((all) => { Object.keys(all).forEach((k) => delete all[k]); });
+const removeJobSources = (...keys) => mutateJobSources((all) => { keys.forEach((k) => { if (k) delete all[k]; }); });
+const pruneJobSources = (cutoff) => mutateJobSources((all) => { Object.keys(all).forEach((k) => { if ((all[k].savedAt || 0) < cutoff) delete all[k]; }); });
+
 async function updateDownloadHistory(entry) {
   try {
-    if (await isPrivate(entry.id, entry.downloadId && 'dl_' + entry.downloadId)) return;
+    if (await isPrivate(entry.id, entry.downloadId && 'dl_' + entry.downloadId, entry.url && 'url:' + entry.url)) return;
+    const src = await getJobSource(entry.id, entry.downloadId && 'dl_' + entry.downloadId);
+    if (src) {
+      entry = {
+        ...entry,
+        sourceUrl: src.url || entry.sourceUrl || '',
+        pageUrl: src.pageUrl || entry.pageUrl || '',
+        pageTitle: src.pageTitle || entry.pageTitle || '',
+        kind: src.kind || entry.kind || '',
+        preferredQuality: src.preferredQuality || entry.preferredQuality || ''
+      };
+    }
     if ((await getRetentionDays()) < 0) return;
     pruneHistory(false);
     if (typeof DownloadDB !== 'undefined' && DownloadDB.saveDownload) {
@@ -965,7 +1031,14 @@ async function installJobHeaderRule(jobId, mediaUrl, pageUrl) {
 const JOB_START_TYPES = new Set(['MUX_HLS', 'DOWNLOAD_PARALLEL', 'DOWNLOAD_STREAM', 'BUILD_ZIP']);
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message && message.id && JOB_START_TYPES.has(message.type)) trackPrivateJob(message.id, sender);
+  if (message && message.id && JOB_START_TYPES.has(message.type)) {
+    trackPrivateJob(message.id, sender);
+    saveJobSource(message.id, {
+      url: message.url, pageUrl: message.pageUrl, pageTitle: message.pageTitle,
+      kind: message.type === 'MUX_HLS' ? 'hls' : message.type === 'BUILD_ZIP' ? 'zip' : 'file',
+      preferredQuality: message.preferredQuality
+    });
+  }
   if (message.type === 'MUX_PROGRESS' && message.id) { recordJobProgress(message); return false; }
   if (message.type === 'MUX_DONE' && message.id) { dropJob(message.id); return false; }
 
@@ -1100,7 +1173,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Fetching is over; the save reads a blob: URL, which needs no header rule.
     releaseJobHeaderRule(message.id);
     dropJob(message.id);
-    withDownloadFolder(message.filename).then((targetFilename) => {
+    withDownloadFolder(message.filename).then(async (targetFilename) => {
+    if (await isPrivate(message.id)) markPrivate('url:' + message.url);
+    else { const src = await getJobSource(message.id); if (src) message._src = src; }
     chrome.downloads.download({ url: message.url, filename: targetFilename, saveAs: false }, async (downloadId) => {
       if (chrome.runtime.lastError) {
         // Release the offscreen scratch file even on failure.
@@ -1119,6 +1194,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
 
       if (await isPrivate(message.id)) markPrivate('dl_' + downloadId);
+      else if (message._src) await saveJobSource('dl_' + downloadId, message._src);
       const blobSaves = await readSession(BLOB_SAVES_KEY);
       blobSaves[downloadId] = message.id;
       await writeSession(BLOB_SAVES_KEY, blobSaves);
@@ -1520,6 +1596,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       let safeName = (filename || 'video').replace(/\.(m3u8|mpd|txt|htm|html|php|aspx|cgi)$/i, '');
       if (!/\.[a-z0-9]{2,5}$/i.test(safeName)) safeName += '.mp4';
 
+      trackPrivateJob(id, sender);
+      saveJobSource(id, { url, pageUrl, kind: 'hls', preferredQuality: message.preferredQuality });
       installJobHeaderRule(id, url, pageUrl)
         .then(() => ensureOffscreen())
         .then(() => chrome.runtime.sendMessage({
@@ -1606,13 +1684,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // the same headers when it resumes an interrupted download. It is released
     // by the chrome.downloads.onChanged handler once the download finishes.
     function triggerDownload() {
-      withDownloadFolder(safeDirectName || 'media.mp4').then((targetFilename) => {
+      trackPrivateJob('url:' + url, sender);
+      withDownloadFolder(safeDirectName || 'media.mp4').then(async (targetFilename) => {
+        await isPrivate('url:' + url);
         chrome.downloads.download({
           url,
           filename: targetFilename,
           saveAs: false
         }, (downloadId) => {
           const startError = chrome.runtime.lastError && chrome.runtime.lastError.message;
+          if (!startError && downloadId !== undefined) {
+            isPrivate('url:' + url).then((priv) => {
+              if (priv) markPrivate('dl_' + downloadId);
+              else saveJobSource('dl_' + downloadId, { url, pageUrl, kind: 'file' });
+            });
+          }
           if (urlHost) {
             if (startError || downloadId === undefined) {
               chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [ruleId] }).catch(() => {});
@@ -1902,6 +1988,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           await DownloadDB.clearAll();
         }
         await chrome.storage.local.set({ downloadHistory: [] });
+        await clearJobSources();
         sendResponse({ ok: true });
       } catch (e) {
         sendResponse({ ok: false, error: e.message });
@@ -1921,6 +2008,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         let history = res.downloadHistory || [];
         history = history.filter(h => h.id !== id && (!downloadId || h.downloadId !== downloadId));
         await chrome.storage.local.set({ downloadHistory: history });
+        await removeJobSources(id, downloadId ? 'dl_' + downloadId : null);
 
         if (downloadId) {
           chrome.downloads.erase({ id: downloadId }, () => {
@@ -2005,10 +2093,11 @@ async function onDownloadFinished(downloadId) {
 }
 
 // ── Global Browser-Wide chrome.downloads Listeners ──
-chrome.downloads.onCreated.addListener((downloadItem) => {
+chrome.downloads.onCreated.addListener(async (downloadItem) => {
   if (!downloadItem || !downloadItem.id) return;
   const id = 'dl_' + downloadItem.id;
-  if (downloadItem.incognito) { markPrivate(id); return; }
+  if (downloadItem.incognito || await isPrivate('url:' + downloadItem.url)) { markPrivate(id); return; }
+  if (downloadItem.referrer) saveJobSource(id, { url: downloadItem.url, pageUrl: downloadItem.referrer, kind: 'file' });
   const rawName = downloadItem.filename ? downloadItem.filename.split(/[\\/]/).pop() : (downloadItem.url ? downloadItem.url.split('/').pop().split('?')[0] : 'download');
   const type = EXT_VIDEO.test(rawName) ? 'video' : EXT_AUDIO.test(rawName) ? 'audio' : EXT_DOC.test(rawName) ? 'doc' : 'file';
 
