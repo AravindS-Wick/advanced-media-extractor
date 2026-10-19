@@ -520,10 +520,26 @@ async function ensureOffscreen() {
 const RULE_BAND_DOMAIN_ALLOW = 100000; // 100000-899999, rebuilt wholesale
 const RULE_BAND_HEADERS = 900000;      // 900000-999999, one per active download
 
+// Header-rule ids are handed out from an in-memory counter, but dynamic rules
+// and the held-rules map both live in storage.session and outlive a service
+// worker. If the counter reset to 0 on every restart it would re-issue ids that
+// are still in use, and `updateDynamicRules({removeRuleIds:[id]})` would then
+// silently delete another in-progress download's header rule. Seed it on
+// startup (seedHeaderRuleCounter) from the highest id already in use so issued
+// ids stay monotonic for the life of the browser session.
 let headerRuleCounter = 0;
 function nextHeaderRuleId() {
   headerRuleCounter = (headerRuleCounter + 1) % 100000;
   return RULE_BAND_HEADERS + headerRuleCounter;
+}
+async function seedHeaderRuleCounter() {
+  try {
+    const held = Object.values(await readHeldRules());
+    const rules = await chrome.declarativeNetRequest.getDynamicRules();
+    const ids = [...held, ...rules.map((r) => r.id)]
+      .filter((id) => id >= RULE_BAND_HEADERS && id < RULE_BAND_HEADERS + 100000);
+    if (ids.length) headerRuleCounter = Math.max(...ids) - RULE_BAND_HEADERS;
+  } catch (_) {}
 }
 
 /**
@@ -766,19 +782,33 @@ async function readHeldRules() {
   } catch (_) { return {}; }
 }
 
-async function holdHeaderRule(key, ruleId) {
-  const held = await readHeldRules();
-  held[key] = ruleId;
-  try { await chrome.storage.session.set({ [HELD_RULES_KEY]: held }); } catch (_) {}
+// readHeldRules/set is a read-modify-write on storage.session. Two downloads
+// starting (or ending) at once would each read the same snapshot and the second
+// write would drop the first's entry, leaking a rule that is never released.
+// Serialize every mutation through this chain so they apply one at a time.
+let heldRulesChain = Promise.resolve();
+function withHeldRules(fn) {
+  const run = heldRulesChain.then(async () => {
+    const held = await readHeldRules();
+    const out = await fn(held);
+    try { await chrome.storage.session.set({ [HELD_RULES_KEY]: held }); } catch (_) {}
+    return out;
+  });
+  heldRulesChain = run.then(() => {}, () => {});
+  return run;
 }
 
-async function releaseHeldRule(key) {
-  const held = await readHeldRules();
-  const ruleId = held[key];
-  if (ruleId === undefined) return;
-  delete held[key];
-  try { await chrome.storage.session.set({ [HELD_RULES_KEY]: held }); } catch (_) {}
-  chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [ruleId] }).catch(() => {});
+function holdHeaderRule(key, ruleId) {
+  return withHeldRules((held) => { held[key] = ruleId; });
+}
+
+function releaseHeldRule(key) {
+  return withHeldRules((held) => {
+    const ruleId = held[key];
+    if (ruleId === undefined) return;
+    delete held[key];
+    chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [ruleId] }).catch(() => {});
+  });
 }
 
 function releaseJobHeaderRule(jobId) {
@@ -1460,7 +1490,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         },
         condition: {
           requestDomains,
-          resourceTypes: ['main_frame', 'sub_frame', 'xmlhttprequest', 'media', 'other']
+          // Only the extension's own download request, never the user's top-level
+          // navigation to this host: main_frame/sub_frame would rewrite Referer/
+          // Origin on normal browsing. A chrome.downloads request is 'other'.
+          resourceTypes: ['xmlhttprequest', 'media', 'other']
         }
       };
 
@@ -2082,6 +2115,7 @@ async function initDownloadTracking() {
     }
 
     await sweepOrphanHeaderRules();
+    await seedHeaderRuleCounter();
     await recoverAfterRestart();
 
     // Re-sync any active in-progress downloads
