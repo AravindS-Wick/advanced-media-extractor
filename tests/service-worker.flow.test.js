@@ -110,6 +110,29 @@ describe('service worker download tracking', () => {
     expect(r.active).toHaveLength(0);
   });
 
+  test('late progress from the engine cannot resurrect a cancelled or finished job', async () => {
+    const t = setup();
+    await t.sleep(100);
+    await t.send({ type: 'DOWNLOAD_PARALLEL', id: 'dl_ghost', url: 'https://x.test/g.bin', filename: 'g.bin' });
+    await t.send({ type: 'MUX_PROGRESS', id: 'dl_ghost', filename: 'g.bin', percent: 7 });
+    await t.sleep(100);
+    expect((await t.list()).active.map((a) => a.id)).toEqual(['dl_ghost']);
+
+    await t.send({ type: 'CANCEL_DOWNLOAD_JOB', id: 'dl_ghost' });
+    // an in-flight read reports after the cancel, and again after MUX_DONE
+    await t.send({ type: 'MUX_PROGRESS', id: 'dl_ghost', filename: 'g.bin', percent: 8 });
+    await t.send({ type: 'MUX_DONE', id: 'dl_ghost', error: 'Cancelled by user' });
+    await t.send({ type: 'MUX_PROGRESS', id: 'dl_ghost', filename: 'g.bin', percent: 9 });
+    await t.sleep(700);
+    expect((await t.list()).active).toHaveLength(0);
+
+    // a brand-new job is not blocked by the guard
+    await t.send({ type: 'DOWNLOAD_PARALLEL', id: 'dl_next', url: 'https://x.test/n.bin', filename: 'n.bin' });
+    await t.send({ type: 'MUX_PROGRESS', id: 'dl_next', filename: 'n.bin', percent: 3 });
+    await t.sleep(100);
+    expect((await t.list()).active.map((a) => a.id)).toEqual(['dl_next']);
+  });
+
   test('incognito downloads are visible this session but never persisted', async () => {
     const t = setup();
     await t.sleep(100);
