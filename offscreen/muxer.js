@@ -465,6 +465,9 @@ async function downloadRange({ url, start, end, signal, sink, onBytes, gate }) {
         await gate();
         arm();
         const { done: rDone, value } = await reader.read();
+        // Data arrived: the connection is alive. Disarm now so a slow disk write below
+        // (writes are serialized across connections) is never mistaken for a stall.
+        clearTimeout(timer);
         if (rDone) break;
         await sink.writeAt(offset, value);
         offset += value.length;
