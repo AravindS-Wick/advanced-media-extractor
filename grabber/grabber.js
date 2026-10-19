@@ -2,6 +2,7 @@
 const params = new URLSearchParams(location.search);
 const tabId = parseInt(params.get('tabId'), 10);
 const pageUrlParam = params.get('url') || '';
+const tabUrl = pageUrlParam;
 
 let items = [];
 let activeCat = 'all';
@@ -435,6 +436,8 @@ function card(it, idx) {
     preview = `<div class="thumb icon">${it.isSubtitle ? '💬' : it.type === 'audio' ? '🎵' : it.type === 'doc' ? '📄' : '🎬'}</div>`;
   }
   
+  const badge = it.kind === 'hls' ? 'HLS' : it.kind === 'dash' ? 'DASH' : (ext(downloadUrl) || it.type).toUpperCase();
+  const pixelBadge = it._pixelLabel ? `<span class="kbadge" style="background:#065f46; color:#a7f3d0;">${esc(it._pixelLabel)}</span>` : '';
   const sizeVal = it.size ? fmtSize(it.size) : '';
   const sizeText = sizeVal ? ` · ${sizeVal}` : '';
   const bufferLabel = (it.kind === 'hls' || it.kind === 'dash') ? ' · Stream' : '';
