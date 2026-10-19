@@ -200,7 +200,17 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
 });
 
+// done()/MUX_* must fire exactly once per job. A cancel deletes the job and
+// calls done() synchronously, but a worker still unwinding can reject and call
+// done() a second time; without this guard that emits a duplicate
+// MUX_FAILED/MUX_DONE pair (and a duplicate history card).
+const finishedJobs = new Set();
+
 function done(id, payload) {
+  if (finishedJobs.has(id)) return;
+  finishedJobs.add(id);
+  // Keep the set bounded over a long-lived offscreen document.
+  if (finishedJobs.size > 500) finishedJobs.delete(finishedJobs.values().next().value);
   const job = activeJobs.get(id);
   releaseJobSlot(job);
   activeJobs.delete(id);
@@ -229,13 +239,19 @@ const PROGRESS_INTERVAL_MS = 500;
 
 function progress(id, progressPayload, force = false) {
   const job = activeJobs.get(id);
-  const paused = !!(job && job.paused);
+  // A cancelled or finished job has been removed from activeJobs. A worker that
+  // is still unwinding (an in-flight sink.writeAt, a late onBytes -> report())
+  // must not emit progress for it: the service worker would re-create it as a
+  // "downloading" ghost card that never clears. The completion/failure is
+  // already signalled by MUX_DONE / MUX_FAILED, not by progress.
+  if (!job) return;
+  const paused = !!job.paused;
   const payload = { ...progressPayload, paused, ...(paused ? { status: 'Paused' } : {}) };
-  if (job) job.last = progressPayload;
+  job.last = progressPayload;
 
   const now = Date.now();
-  if (!force && job && now - (job.lastSent || 0) < PROGRESS_INTERVAL_MS) return;
-  if (job) job.lastSent = now;
+  if (!force && now - (job.lastSent || 0) < PROGRESS_INTERVAL_MS) return;
+  job.lastSent = now;
   chrome.runtime.sendMessage({ type: 'MUX_PROGRESS', id, ...payload }).catch(() => {});
 }
 
