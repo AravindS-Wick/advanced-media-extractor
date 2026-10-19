@@ -1578,6 +1578,7 @@ function setupAdBlockerToggle() {
   }
 
   refreshAdBlockState();
+  window.refreshAdBlockState = refreshAdBlockState;
 
   // Per-domain switch change handler
   const domainToggle = $('adblockDomainToggle');
@@ -2500,9 +2501,22 @@ function setupDownloadsSync(refresh) {
   const tabSel = document.getElementById('maxJobsSelect');
   if (tabSel) tabSel.onchange = () => chrome.runtime.sendMessage({ type: 'SET_MAX_JOBS', value: parseInt(tabSel.value, 10) });
   let t = null;
+  // A page left in the background misses broadcasts; catch up when it is shown again.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    refresh();
+    if (typeof window.refreshAdBlockState === 'function') window.refreshAdBlockState();
+    if (typeof scanCurrentPage === 'function' && activeTabId) scanCurrentPage(false, true);
+  });
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
     if (changes.maxConcurrentJobs) syncSelect(changes.maxConcurrentJobs.newValue);
+    if (changes.adBlockEnabled || changes.adBlockDisabledDomains) {
+      if (typeof window.refreshAdBlockState === 'function') window.refreshAdBlockState();
+    }
+    if (changes.historyRetentionDays && document.getElementById('historyRetentionSetting')) {
+      document.getElementById('historyRetentionSetting').value = String(changes.historyRetentionDays.newValue || 0);
+    }
     if (changes.activeDownloadJobs || changes.activeDownloads || changes.downloadHistory) {
       if (t) return;
       t = setTimeout(() => { t = null; refresh(); }, 600);

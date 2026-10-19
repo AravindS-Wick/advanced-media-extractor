@@ -153,9 +153,11 @@ function clearList() {
   render();
 }
 
-async function scan() {
-  $('status').textContent = 'Scanning this page…';
-  $('grid').innerHTML = '';
+async function scan(silent = false) {
+  if (!silent) {
+    $('status').textContent = 'Scanning this page…';
+    $('grid').innerHTML = '';
+  }
 
   if (tabId) {
     try {
@@ -1871,6 +1873,19 @@ function setupDownloadsSync(refresh) {
     sel.onchange = () => chrome.runtime.sendMessage({ type: 'SET_MAX_JOBS', value: parseInt(sel.value, 10) });
   }
   let t = null;
+  // A grabber tab left in the background misses broadcasts; catch up when shown again.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    refresh();
+    if ($('downloadsView').classList.contains('hidden')) scan(true);
+  });
+  // New media sniffed on the source tab while this page is open.
+  let liveScanTimer = null;
+  chrome.runtime.onMessage.addListener((m) => {
+    if (!m || m.type !== 'MEDIA_UPDATE' || m.tabId !== tabId) return;
+    clearTimeout(liveScanTimer);
+    liveScanTimer = setTimeout(() => { if ($('downloadsView').classList.contains('hidden')) scan(true); }, 1500);
+  });
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
     if (changes.maxConcurrentJobs) syncSelect(changes.maxConcurrentJobs.newValue);
